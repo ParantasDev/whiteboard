@@ -625,6 +625,9 @@ export default function WhiteboardCanvas({
   // Context menu: holds the IDs to act on (either the selection or a single right-clicked element)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; elementIds: string[] } | null>(null);
 
+  // Undo history: each entry records what was added and removed in one user action
+  const undoStackRef = useRef<Array<{ added: DrawElement[]; removed: DrawElement[] }>>([]);
+
   // Coloring pages
   const [coloringPages, setColoringPages] = useState<ColoringPage[]>([]);
   const [showColoringPanel, setShowColoringPanel] = useState(false);
@@ -985,12 +988,14 @@ export default function WhiteboardCanvas({
       const ti = textInputPosRef.current;
       const tv = textValueRef.current.trim();
       if (ti && tv) {
-        onElementComplete({
+        const el = {
           id: uuidv4(), type: "text",
           x: ti.worldX, y: ti.worldY,
           text: tv, color: colorRef.current,
           fontSize: 28, playerIndex: playerIndexRef.current,
-        } as TextElement);
+        } as TextElement;
+        undoStackRef.current.push({ added: [el], removed: [] });
+        onElementComplete(el);
       }
       setTextInput(null);
       setTextValue("");
@@ -1066,18 +1071,29 @@ export default function WhiteboardCanvas({
     return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
   }, []);
 
+  // ── Undo ─────────────────────────────────────────────────────────────────────
+
+  const handleLocalUndo = useCallback(() => {
+    const action = undoStackRef.current.pop();
+    if (!action) return;
+    if (action.added.length > 0) onErase(action.added.map((el) => el.id));
+    for (const el of action.removed) onElementComplete(el);
+  }, [onErase, onElementComplete]);
+
   // ── Keyboard shortcuts ────────────────────────────────────────────────────────
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (textInput) return;
-      if ((e.metaKey || e.ctrlKey) && e.key === "z") { e.preventDefault(); onUndo(playerIndexRef.current); }
+      if ((e.metaKey || e.ctrlKey) && e.key === "z") { e.preventDefault(); handleLocalUndo(); }
       if (!e.metaKey && !e.ctrlKey && !e.altKey) {
         if (e.key === "+" || e.key === "=") { e.preventDefault(); applyZoom(1.25); }
         if (e.key === "-") { e.preventDefault(); applyZoom(1 / 1.25); }
         if (e.key === "0") { e.preventDefault(); resetView(); }
         if ((e.key === "Delete" || e.key === "Backspace") && toolRef.current === "select") {
           if (selectedIdsRef.current.length > 0) {
+            const toDelete = elementsRef.current.filter((el) => selectedIdsRef.current.includes(el.id));
+            undoStackRef.current.push({ added: [], removed: toDelete });
             onErase(selectedIdsRef.current);
             setSelectedIds([]);
             selectedIdsRef.current = [];
@@ -1087,7 +1103,7 @@ export default function WhiteboardCanvas({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [textInput, onUndo, applyZoom, resetView, onErase]);
+  }, [textInput, handleLocalUndo, applyZoom, resetView, onErase]);
 
   // ── Close context menu on outside click ──────────────────────────────────────
 
@@ -1161,21 +1177,27 @@ export default function WhiteboardCanvas({
           const el = els[i];
           if (el.type === "rect" || el.type === "ellipse") {
             if (hitTestElement(el, pt.x, pt.y)) {
+              const filled = { ...el, fillColor: colorRef.current };
+              undoStackRef.current.push({ added: [filled], removed: [el] });
               onErase([el.id]);
-              onElementComplete({ ...el, fillColor: colorRef.current });
+              onElementComplete(filled);
               break;
             }
           } else if (el.type === "stroke") {
             if (pointInPath(el.points, pt.x, pt.y)) {
+              const filled = { ...el, fillColor: colorRef.current };
+              undoStackRef.current.push({ added: [filled], removed: [el] });
               onErase([el.id]);
-              onElementComplete({ ...el, fillColor: colorRef.current });
+              onElementComplete(filled);
               break;
             }
           } else if (el.type === "image") {
             if (hitTestElement(el, pt.x, pt.y)) {
               const newFills = [...(el.fills ?? []), { wx: pt.x, wy: pt.y, color: colorRef.current }];
+              const filled = { ...el, fills: newFills };
+              undoStackRef.current.push({ added: [filled], removed: [el] });
               onErase([el.id]);
-              onElementComplete({ ...el, fills: newFills });
+              onElementComplete(filled);
               break;
             }
           }
@@ -1295,10 +1317,10 @@ export default function WhiteboardCanvas({
           const dy = pt.y - ds.startY;
           if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
             const movedIds = ds.elementSnapshots.map((snap) => snap.id);
+            const movedElements = ds.elementSnapshots.map((snap) => translateElement(snap, dx, dy));
+            undoStackRef.current.push({ added: movedElements, removed: ds.elementSnapshots });
             onErase(movedIds);
-            for (const snap of ds.elementSnapshots) {
-              onElementComplete(translateElement(snap, dx, dy));
-            }
+            for (const el of movedElements) onElementComplete(el);
             setSelectedIds(movedIds);
             selectedIdsRef.current = movedIds;
           }
@@ -1339,28 +1361,41 @@ export default function WhiteboardCanvas({
 
       if (t === "pen") {
         if (points.length < 2) return;
-        onElementComplete({ id: uuidv4(), type: "stroke", points, color: c, width: w, playerIndex: pi } as StrokeElement);
+        const el = { id: uuidv4(), type: "stroke", points, color: c, width: w, playerIndex: pi } as StrokeElement;
+        undoStackRef.current.push({ added: [el], removed: [] });
+        onElementComplete(el);
       } else if (t === "eraser") {
         const ep = [...eraserRef.current];
         eraserRef.current = [];
         if (ep.length === 0) return;
         const hits = elementsRef.current.filter((el) => elementHitByEraser(el, ep, w * 5));
-        if (hits.length > 0) onErase(hits.map((el) => el.id));
+        if (hits.length > 0) {
+          undoStackRef.current.push({ added: [], removed: hits });
+          onErase(hits.map((el) => el.id));
+        }
       } else if (t === "rect") {
         const x = Math.min(startX, pt.x), y = Math.min(startY, pt.y);
         const rw = Math.abs(pt.x - startX), rh = Math.abs(pt.y - startY);
         if (rw < 5 || rh < 5) return;
-        onElementComplete({ id: uuidv4(), type: "rect", x, y, w: rw, h: rh, color: c, width: w, filled: f, playerIndex: pi } as RectElement);
+        const el = { id: uuidv4(), type: "rect", x, y, w: rw, h: rh, color: c, width: w, filled: f, playerIndex: pi } as RectElement;
+        undoStackRef.current.push({ added: [el], removed: [] });
+        onElementComplete(el);
       } else if (t === "ellipse") {
         const rx = Math.abs(pt.x - startX) / 2, ry = Math.abs(pt.y - startY) / 2;
         if (rx < 5 || ry < 5) return;
-        onElementComplete({ id: uuidv4(), type: "ellipse", cx: (startX + pt.x) / 2, cy: (startY + pt.y) / 2, rx, ry, color: c, width: w, filled: f, playerIndex: pi } as EllipseElement);
+        const el = { id: uuidv4(), type: "ellipse", cx: (startX + pt.x) / 2, cy: (startY + pt.y) / 2, rx, ry, color: c, width: w, filled: f, playerIndex: pi } as EllipseElement;
+        undoStackRef.current.push({ added: [el], removed: [] });
+        onElementComplete(el);
       } else if (t === "line") {
         if (Math.hypot(pt.x - startX, pt.y - startY) < 5) return;
-        onElementComplete({ id: uuidv4(), type: "line", x1: startX, y1: startY, x2: pt.x, y2: pt.y, color: c, width: w, playerIndex: pi } as LineElement);
+        const el = { id: uuidv4(), type: "line", x1: startX, y1: startY, x2: pt.x, y2: pt.y, color: c, width: w, playerIndex: pi } as LineElement;
+        undoStackRef.current.push({ added: [el], removed: [] });
+        onElementComplete(el);
       } else if (t === "arrow") {
         if (Math.hypot(pt.x - startX, pt.y - startY) < 5) return;
-        onElementComplete({ id: uuidv4(), type: "arrow", x1: startX, y1: startY, x2: pt.x, y2: pt.y, color: c, width: w, playerIndex: pi } as ArrowElement);
+        const el = { id: uuidv4(), type: "arrow", x1: startX, y1: startY, x2: pt.x, y2: pt.y, color: c, width: w, playerIndex: pi } as ArrowElement;
+        undoStackRef.current.push({ added: [el], removed: [] });
+        onElementComplete(el);
       }
     },
     [toCanvas, onElementComplete, onPreviewUpdate, onErase]
@@ -1415,12 +1450,14 @@ export default function WhiteboardCanvas({
       const ti = textInputPosRef.current;
       const tv = textValueRef.current.trim();
       if (ti && tv) {
-        onElementComplete({
+        const el = {
           id: uuidv4(), type: "text",
           x: ti.worldX, y: ti.worldY,
           text: tv, color: colorRef.current,
           fontSize: 28, playerIndex: playerIndexRef.current,
-        } as TextElement);
+        } as TextElement;
+        undoStackRef.current.push({ added: [el], removed: [] });
+        onElementComplete(el);
       }
       setTextInput(null);
       setTextValue("");
@@ -1462,7 +1499,7 @@ export default function WhiteboardCanvas({
       h = w;
     }
 
-    onElementComplete({
+    const el = {
       id: uuidv4(),
       type: "image",
       x: cx - w / 2,
@@ -1473,7 +1510,9 @@ export default function WhiteboardCanvas({
       url: `/api/coloring-image?key=coloring-pages/${page.filename}`,
       name: page.name,
       playerIndex: playerIndexRef.current,
-    } as ImageElement);
+    } as ImageElement;
+    undoStackRef.current.push({ added: [el], removed: [] });
+    onElementComplete(el);
   }, [onElementComplete]);
 
   // ── Cursor style ──────────────────────────────────────────────────────────────
@@ -1509,7 +1548,7 @@ export default function WhiteboardCanvas({
 
         <button
           title="Undo (Ctrl+Z)"
-          onClick={() => onUndo(playerIndexRef.current)}
+          onClick={handleLocalUndo}
           className="w-9 h-9 rounded-lg flex items-center justify-center text-gray-500 hover:bg-gray-100 hover:text-gray-800 transition"
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">

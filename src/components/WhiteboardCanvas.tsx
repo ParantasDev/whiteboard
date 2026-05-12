@@ -752,7 +752,13 @@ export default function WhiteboardCanvas({
   const edgeIndicatorRef = useRef<{ x: number; y: number } | null>(null);
   const panTargetRef = useRef<{ panX: number; panY: number } | null>(null);
   const remoteCursorRef = useRef<RemoteCursor | null>(null);
-  useEffect(() => { remoteCursorRef.current = remoteCursor; }, [remoteCursor]);
+  const remoteLaserTrailRef = useRef<Array<{ x: number; y: number; t: number }>>([]);
+  useEffect(() => {
+    remoteCursorRef.current = remoteCursor;
+    if (remoteCursor?.isLaser) {
+      remoteLaserTrailRef.current.push({ x: remoteCursor.x, y: remoteCursor.y, t: Date.now() });
+    }
+  }, [remoteCursor]);
 
   // Resize/rotation handle drag state
   const handleDragRef = useRef<{
@@ -1030,14 +1036,37 @@ export default function WhiteboardCanvas({
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.save();
       if (remoteCursor.isLaser) {
+        // Draw remote laser trail (world space)
+        const rNow = Date.now();
+        const rTrail = remoteLaserTrailRef.current.filter((p) => rNow - p.t < 2000);
+        remoteLaserTrailRef.current = rTrail;
+        ctx.setTransform(zoom, 0, 0, zoom, panX, panY);
+        ctx.save();
+        if (rTrail.length > 1) {
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+          for (let i = 1; i < rTrail.length; i++) {
+            const age = (rNow - rTrail[i].t) / 2000;
+            ctx.globalAlpha = (1 - age) * 0.85;
+            ctx.strokeStyle = "#ef4444";
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(rTrail[i - 1].x, rTrail[i - 1].y);
+            ctx.lineTo(rTrail[i].x, rTrail[i].y);
+            ctx.stroke();
+          }
+        }
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = "#ef4444";
         ctx.beginPath();
-        ctx.arc(sx, sy, 8, 0, Math.PI * 2);
-        ctx.fillStyle = "#ef4444cc";
+        ctx.arc(remoteCursor.x, remoteCursor.y, 5, 0, Math.PI * 2);
         ctx.fill();
-        ctx.beginPath();
-        ctx.arc(sx, sy, 4, 0, Math.PI * 2);
         ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(remoteCursor.x, remoteCursor.y, 2.5, 0, Math.PI * 2);
         ctx.fill();
+        ctx.restore();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
       } else {
         ctx.fillStyle = rc;
         ctx.strokeStyle = "#ffffff";

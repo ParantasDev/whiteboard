@@ -649,7 +649,7 @@ interface WhiteboardCanvasProps {
   playerIndex: number;
   onElementComplete: (el: DrawElement) => void;
   onPreviewUpdate: (preview: RemotePreview | null) => void;
-  onCursorMove: (x: number, y: number, isLaser?: boolean) => void;
+  onCursorMove: (x: number, y: number, isLaser?: boolean, isDrawing?: boolean) => void;
   onUndo: (playerIndex: number) => void;
   onErase: (ids: string[]) => void;
   onClear: () => void;
@@ -755,7 +755,7 @@ export default function WhiteboardCanvas({
   const remoteLaserTrailRef = useRef<Array<{ x: number; y: number; t: number }>>([]);
   useEffect(() => {
     remoteCursorRef.current = remoteCursor;
-    if (remoteCursor?.isLaser) {
+    if (remoteCursor?.isLaser && remoteCursor.isDrawing) {
       remoteLaserTrailRef.current.push({ x: remoteCursor.x, y: remoteCursor.y, t: Date.now() });
     }
   }, [remoteCursor]);
@@ -1680,7 +1680,7 @@ export default function WhiteboardCanvas({
       const now = Date.now();
       const isLaserTool = toolRef.current === "laser";
       if (now - lastSocketSendRef.current > 33) {
-        onCursorMove(pt.x, pt.y, isLaserTool);
+        onCursorMove(pt.x, pt.y, isLaserTool, isLaserTool && drawingRef.current.active);
         lastSocketSendRef.current = now;
       }
       mousePosRef.current = pt;

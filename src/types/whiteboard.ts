@@ -107,6 +107,7 @@ export interface RemoteCursor {
   y: number;
   playerIndex: number;
   isLaser?: boolean;
+  isDrawing?: boolean;
 }
 
 export type RemotePreview =

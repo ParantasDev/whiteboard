@@ -11,6 +11,17 @@ export type ToolType =
   | "eraser"
   | "fill";
 
+export interface ImageElement extends BaseElement {
+  type: "image";
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  url: string;
+  name: string;
+  fills?: Array<{ wx: number; wy: number; color: string }>;
+}
+
 export interface BaseElement {
   id: string;
   playerIndex: number;
@@ -83,7 +94,8 @@ export type DrawElement =
   | EllipseElement
   | LineElement
   | ArrowElement
-  | TextElement;
+  | TextElement
+  | ImageElement;
 
 export interface RemoteCursor {
   x: number;

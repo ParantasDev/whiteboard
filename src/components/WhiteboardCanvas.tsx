@@ -14,6 +14,7 @@ import type {
   LineElement,
   ArrowElement,
   TextElement,
+  ImageElement,
 } from "@/types/whiteboard";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -111,6 +112,106 @@ const TOOL_ICONS: Record<ToolType, React.ReactNode> = {
     </svg>
   ),
 };
+
+// ── Image cache (url → HTMLImageElement) ──────────────────────────────────────
+
+const imageCache = new Map<string, HTMLImageElement>();
+
+function loadImage(url: string): HTMLImageElement {
+  if (imageCache.has(url)) return imageCache.get(url)!;
+  const img = new Image();
+  img.src = url;
+  imageCache.set(url, img);
+  return img;
+}
+
+// ── Flood fill ────────────────────────────────────────────────────────────────
+
+function floodFillImageData(
+  imageData: ImageData,
+  startX: number,
+  startY: number,
+  fillHex: string
+): void {
+  const { width, height, data } = imageData;
+  if (startX < 0 || startX >= width || startY < 0 || startY >= height) return;
+
+  const fr = parseInt(fillHex.slice(1, 3), 16);
+  const fg = parseInt(fillHex.slice(3, 5), 16);
+  const fb = parseInt(fillHex.slice(5, 7), 16);
+
+  const si = (startY * width + startX) * 4;
+  const startBrightness = (data[si] + data[si + 1] + data[si + 2]) / 3;
+  // Don't fill dark outline pixels
+  if (data[si + 3] > 128 && startBrightness < 80) return;
+  // Already this color
+  if (data[si] === fr && data[si + 1] === fg && data[si + 2] === fb) return;
+
+  const stack: number[] = [startY * width + startX];
+  const visited = new Uint8Array(width * height);
+  visited[startY * width + startX] = 1;
+
+  while (stack.length > 0) {
+    const pos = stack.pop()!;
+    const x = pos % width;
+    const y = Math.floor(pos / width);
+    const i = pos * 4;
+    data[i] = fr; data[i + 1] = fg; data[i + 2] = fb; data[i + 3] = 255;
+
+    const neighbors = [
+      x > 0 ? pos - 1 : -1,
+      x < width - 1 ? pos + 1 : -1,
+      y > 0 ? pos - width : -1,
+      y < height - 1 ? pos + width : -1,
+    ];
+    for (const n of neighbors) {
+      if (n < 0 || visited[n]) continue;
+      const ni = n * 4;
+      const brightness = (data[ni] + data[ni + 1] + data[ni + 2]) / 3;
+      // Stop at dark (outline) pixels
+      if (data[ni + 3] > 128 && brightness < 80) continue;
+      visited[n] = 1;
+      stack.push(n);
+    }
+  }
+}
+
+const imageFillCache = new Map<string, HTMLCanvasElement>();
+
+function getFilledImageCanvas(el: ImageElement): HTMLCanvasElement | null {
+  const cacheKey = `${el.url}|${JSON.stringify(el.fills ?? [])}`;
+  if (imageFillCache.has(cacheKey)) return imageFillCache.get(cacheKey)!;
+
+  const img = loadImage(el.url);
+  if (!img.complete || img.naturalWidth === 0) return null;
+
+  // Render at a consistent pixel resolution (longest side = 1200px)
+  const aspect = el.w / el.h;
+  const cw = aspect >= 1 ? 1200 : Math.round(1200 * aspect);
+  const ch = aspect >= 1 ? Math.round(1200 / aspect) : 1200;
+
+  const offscreen = document.createElement("canvas");
+  offscreen.width = cw;
+  offscreen.height = ch;
+  const ctx = offscreen.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.drawImage(img, 0, 0, cw, ch);
+
+  for (const fill of el.fills ?? []) {
+    const fx = Math.round((fill.wx - el.x) / el.w * cw);
+    const fy = Math.round((fill.wy - el.y) / el.h * ch);
+    try {
+      const imageData = ctx.getImageData(0, 0, cw, ch);
+      floodFillImageData(imageData, fx, fy, fill.color);
+      ctx.putImageData(imageData, 0, 0);
+    } catch {
+      break; // canvas tainted — shouldn't happen with proxy URL
+    }
+  }
+
+  imageFillCache.set(cacheKey, offscreen);
+  return offscreen;
+}
 
 // ── Canvas drawing helpers ─────────────────────────────────────────────────────
 
@@ -243,6 +344,22 @@ function renderElement(ctx: CanvasRenderingContext2D, el: DrawElement) {
         ctx.fillText(line, el.x, el.y + i * el.fontSize * 1.3);
       });
       break;
+    case "image": {
+      if (el.fills && el.fills.length > 0) {
+        const filled = getFilledImageCanvas(el);
+        if (filled) {
+          ctx.drawImage(filled, el.x, el.y, el.w, el.h);
+        } else {
+          // Still loading — draw unfilled while computing
+          const img = loadImage(el.url);
+          if (img.complete && img.naturalWidth > 0) ctx.drawImage(img, el.x, el.y, el.w, el.h);
+        }
+      } else {
+        const img = loadImage(el.url);
+        if (img.complete && img.naturalWidth > 0) ctx.drawImage(img, el.x, el.y, el.w, el.h);
+      }
+      break;
+    }
   }
   ctx.restore();
 }
@@ -319,6 +436,11 @@ function elementHitByEraser(el: DrawElement, eraserPoints: Point[], radius: numb
         ep.x >= el.x - radius && ep.x <= el.x + 300 &&
         ep.y >= el.y - el.fontSize - radius && ep.y <= el.y + radius
       );
+    case "image":
+      return eraserPoints.some((ep) =>
+        ep.x >= el.x - radius && ep.x <= el.x + el.w + radius &&
+        ep.y >= el.y - radius && ep.y <= el.y + el.h + radius
+      );
   }
 }
 
@@ -360,6 +482,8 @@ function getBounds(el: DrawElement): { x: number; y: number; w: number; h: numbe
       const approxW = Math.max(...lines.map((l) => l.length)) * el.fontSize * 0.55 + 16;
       return { x: el.x, y: el.y - el.fontSize, w: approxW, h: lines.length * el.fontSize * 1.3 };
     }
+    case "image":
+      return { x: el.x, y: el.y, w: el.w, h: el.h };
   }
 }
 
@@ -387,6 +511,8 @@ function translateElement(el: DrawElement, dx: number, dy: number): DrawElement 
       return { ...el, x1: el.x1 + dx, y1: el.y1 + dy, x2: el.x2 + dx, y2: el.y2 + dy };
     case "text":
       return { ...el, x: el.x + dx, y: el.y + dy };
+    case "image":
+      return { ...el, x: el.x + dx, y: el.y + dy };
   }
 }
 
@@ -397,6 +523,12 @@ type PreviewShape =
   | { type: "rect"; x: number; y: number; w: number; h: number; color: string; width: number; filled: boolean }
   | { type: "ellipse"; cx: number; cy: number; rx: number; ry: number; color: string; width: number; filled: boolean }
   | { type: "line" | "arrow"; x1: number; y1: number; x2: number; y2: number; color: string; width: number };
+
+interface ColoringPage {
+  filename: string;
+  name: string;
+  url: string;
+}
 
 interface WhiteboardCanvasProps {
   elements: DrawElement[];
@@ -493,6 +625,10 @@ export default function WhiteboardCanvas({
   // Context menu: holds the IDs to act on (either the selection or a single right-clicked element)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; elementIds: string[] } | null>(null);
 
+  // Coloring pages
+  const [coloringPages, setColoringPages] = useState<ColoringPage[]>([]);
+  const [showColoringPanel, setShowColoringPanel] = useState(false);
+
   // Stable refs for callbacks
   const toolRef = useRef(tool);
   const colorRef = useRef(color);
@@ -510,6 +646,15 @@ export default function WhiteboardCanvas({
   useEffect(() => { textValueRef.current = textValue; }, [textValue]);
   useEffect(() => { textInputPosRef.current = textInput; textActiveRef.current = !!textInput; }, [textInput]);
   useEffect(() => { selectedIdsRef.current = selectedIds; }, [selectedIds]);
+
+  // ── Fetch coloring pages ──────────────────────────────────────────────────────
+
+  useEffect(() => {
+    fetch("/api/coloring-pages")
+      .then((r) => r.json())
+      .then(setColoringPages)
+      .catch(() => {});
+  }, []);
 
   // ── Canvas resize ─────────────────────────────────────────────────────────────
 
@@ -1026,6 +1171,13 @@ export default function WhiteboardCanvas({
               onElementComplete({ ...el, fillColor: colorRef.current });
               break;
             }
+          } else if (el.type === "image") {
+            if (hitTestElement(el, pt.x, pt.y)) {
+              const newFills = [...(el.fills ?? []), { wx: pt.x, wy: pt.y, color: colorRef.current }];
+              onErase([el.id]);
+              onElementComplete({ ...el, fills: newFills });
+              break;
+            }
           }
         }
         return;
@@ -1284,6 +1436,46 @@ export default function WhiteboardCanvas({
     setTool(t);
   }, [onElementComplete]);
 
+  // ── Place coloring page centered in current viewport ─────────────────────────
+
+  const placeColoringPage = useCallback((page: ColoringPage, aspectRatio?: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const { panX, panY, zoom } = viewRef.current;
+    const cx = (canvas.width / 2 - panX) / zoom;
+    const cy = (canvas.height / 2 - panY) / zoom;
+
+    // Fit within 60% of the visible viewport, preserving aspect ratio
+    const maxW = (canvas.width * 0.6) / zoom;
+    const maxH = (canvas.height * 0.6) / zoom;
+    let w: number, h: number;
+    if (aspectRatio && aspectRatio > 0) {
+      if (aspectRatio >= 1) {
+        w = maxW; h = w / aspectRatio;
+        if (h > maxH) { h = maxH; w = h * aspectRatio; }
+      } else {
+        h = maxH; w = h * aspectRatio;
+        if (w > maxW) { w = maxW; h = w / aspectRatio; }
+      }
+    } else {
+      w = Math.min(maxW, maxH);
+      h = w;
+    }
+
+    onElementComplete({
+      id: uuidv4(),
+      type: "image",
+      x: cx - w / 2,
+      y: cy - h / 2,
+      w,
+      h,
+      // Proxy URL: same-origin, stable (no expiry), allows getImageData for flood fill
+      url: `/api/coloring-image?key=coloring-pages/${page.filename}`,
+      name: page.name,
+      playerIndex: playerIndexRef.current,
+    } as ImageElement);
+  }, [onElementComplete]);
+
   // ── Cursor style ──────────────────────────────────────────────────────────────
 
   const cursorStyle = cursorOverride ?? (
@@ -1331,6 +1523,21 @@ export default function WhiteboardCanvas({
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">
             <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6" /><path d="M14 11v6" /><path d="M9 6V4h6v2" />
+          </svg>
+        </button>
+
+        <div className="w-px h-6 bg-gray-200 mx-1" />
+
+        <button
+          title="Coloring Pages"
+          onClick={() => setShowColoringPanel((v) => !v)}
+          className={`w-9 h-9 rounded-lg flex items-center justify-center transition
+            ${showColoringPanel ? "bg-indigo-100 text-indigo-600" : "text-gray-500 hover:bg-gray-100 hover:text-gray-800"}`}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+            <circle cx="8.5" cy="8.5" r="1.5" />
+            <polyline points="21 15 16 10 5 21" />
           </svg>
         </button>
       </div>
@@ -1415,6 +1622,42 @@ export default function WhiteboardCanvas({
           <button onClick={() => { contextMenu.elementIds.forEach((id) => onReorder(id, "forward")); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Bring Forward</button>
           <button onClick={() => { contextMenu.elementIds.forEach((id) => onReorder(id, "backward")); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Send Backward</button>
           <button onClick={() => { contextMenu.elementIds.forEach((id) => onReorder(id, "back")); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 rounded-b-xl">Send to Back</button>
+        </div>
+      )}
+
+      {/* ── Coloring pages panel ───────────────────────────────────────────────── */}
+      {showColoringPanel && (
+        <div className="absolute right-3 top-14 z-20 w-60 max-h-[calc(100%-6rem)] flex flex-col bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden">
+          <div className="px-3 py-2 border-b border-gray-100 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Coloring Pages
+          </div>
+          <div className="overflow-y-auto p-2 flex flex-col gap-1.5">
+            {coloringPages.length === 0 ? (
+              <div className="text-xs text-gray-400 px-1 py-2">No pages found.</div>
+            ) : (
+              coloringPages.map((page) => (
+                <button
+                  key={page.filename}
+                  onClick={(e) => {
+                    const imgEl = e.currentTarget.querySelector("img") as HTMLImageElement | null;
+                    const ar = imgEl && imgEl.naturalWidth > 0 && imgEl.naturalHeight > 0
+                      ? imgEl.naturalWidth / imgEl.naturalHeight
+                      : undefined;
+                    placeColoringPage(page, ar);
+                    setShowColoringPanel(false);
+                  }}
+                  className="flex items-center gap-3 p-2 rounded-lg hover:bg-indigo-50 text-left transition"
+                >
+                  <img
+                    src={page.url}
+                    alt={page.name}
+                    className="w-14 h-14 object-contain border border-gray-200 rounded bg-white flex-shrink-0"
+                  />
+                  <span className="text-xs text-gray-700 capitalize leading-tight">{page.name}</span>
+                </button>
+              ))
+            )}
+          </div>
         </div>
       )}
 

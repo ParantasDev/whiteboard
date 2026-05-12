@@ -748,6 +748,12 @@ export default function WhiteboardCanvas({
   // Laser pointer: timestamped trail points
   const laserTrailRef = useRef<Array<{ x: number; y: number; t: number }>>([]);
 
+  // Partner edge indicator + smooth pan-to-partner
+  const edgeIndicatorRef = useRef<{ x: number; y: number } | null>(null);
+  const panTargetRef = useRef<{ panX: number; panY: number } | null>(null);
+  const remoteCursorRef = useRef<RemoteCursor | null>(null);
+  useEffect(() => { remoteCursorRef.current = remoteCursor; }, [remoteCursor]);
+
   // Resize/rotation handle drag state
   const handleDragRef = useRef<{
     type: "resize" | "rotate";
@@ -1049,6 +1055,52 @@ export default function WhiteboardCanvas({
         ctx.stroke();
       }
       ctx.restore();
+
+      // Edge indicator when remote cursor is off-screen
+      edgeIndicatorRef.current = null;
+      const W = canvas.width, H = canvas.height;
+      const isx = remoteCursor.x * zoom + panX;
+      const isy = remoteCursor.y * zoom + panY;
+      if (isx < 0 || isx > W || isy < 0 || isy > H) {
+        const MARGIN = 32;
+        const cx = W / 2, cy = H / 2;
+        const dx = isx - cx, dy = isy - cy;
+        const tx = Math.abs(dx) > 0 ? (cx - MARGIN) / Math.abs(dx) : Infinity;
+        const ty = Math.abs(dy) > 0 ? (cy - MARGIN) / Math.abs(dy) : Infinity;
+        const t = Math.min(tx, ty);
+        const ex = cx + dx * t, ey = cy + dy * t;
+        edgeIndicatorRef.current = { x: ex, y: ey };
+        const angle = Math.atan2(dy, dx);
+        const rc = PLAYER_COLORS[1 - playerIndexRef.current] ?? PLAYER_COLORS[1];
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.save();
+        // Glow ring
+        ctx.beginPath();
+        ctx.arc(ex, ey, 18, 0, Math.PI * 2);
+        ctx.fillStyle = rc + "40";
+        ctx.fill();
+        // Filled circle
+        ctx.beginPath();
+        ctx.arc(ex, ey, 13, 0, Math.PI * 2);
+        ctx.fillStyle = rc;
+        ctx.fill();
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        // Arrow pointing toward partner
+        ctx.save();
+        ctx.translate(ex, ey);
+        ctx.rotate(angle);
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.moveTo(7, 0);
+        ctx.lineTo(-4, -4.5);
+        ctx.lineTo(-4, 4.5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+        ctx.restore();
+      }
     }
 
     // Local laser trail (world space)
@@ -1133,9 +1185,24 @@ export default function WhiteboardCanvas({
     }
   }, [remotePreview, remoteCursor]);
 
-  // RAF loop
+  // RAF loop (also drives smooth pan-to-partner animation)
   useEffect(() => {
-    const loop = () => { render(); rafRef.current = requestAnimationFrame(loop); };
+    const loop = () => {
+      if (panTargetRef.current) {
+        const { panX, panY, zoom } = viewRef.current;
+        const dx = panTargetRef.current.panX - panX;
+        const dy = panTargetRef.current.panY - panY;
+        if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) {
+          viewRef.current = { panX: panTargetRef.current.panX, panY: panTargetRef.current.panY, zoom };
+          panTargetRef.current = null;
+        } else {
+          viewRef.current = { panX: panX + dx * 0.14, panY: panY + dy * 0.14, zoom };
+        }
+        setZoomDisplay(Math.round(zoom * 100));
+      }
+      render();
+      rafRef.current = requestAnimationFrame(loop);
+    };
     rafRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafRef.current);
   }, [render]);
@@ -1392,6 +1459,24 @@ export default function WhiteboardCanvas({
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
+      // Click on edge indicator → smooth-pan to partner
+      if (edgeIndicatorRef.current && remoteCursorRef.current) {
+        const canvas = canvasRef.current!;
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        const sx = (e.clientX - rect.left) * scaleX;
+        const sy = (e.clientY - rect.top) * scaleY;
+        if (Math.hypot(sx - edgeIndicatorRef.current.x, sy - edgeIndicatorRef.current.y) < 22) {
+          const { zoom } = viewRef.current;
+          panTargetRef.current = {
+            panX: canvas.width / 2 - remoteCursorRef.current.x * zoom,
+            panY: canvas.height / 2 - remoteCursorRef.current.y * zoom,
+          };
+          return;
+        }
+      }
+
       const isPanTrigger = e.button === 1 || (e.button === 0 && spaceDownRef.current);
       if (isPanTrigger) {
         e.preventDefault();

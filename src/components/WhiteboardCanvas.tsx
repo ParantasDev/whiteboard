@@ -580,6 +580,54 @@ function translateElement(el: DrawElement, dx: number, dy: number): DrawElement 
   }
 }
 
+function scaleElement(
+  el: DrawElement,
+  orig: { x: number; y: number; w: number; h: number },
+  next: { x: number; y: number; w: number; h: number }
+): DrawElement {
+  const { x: ox, y: oy, w: ow, h: oh } = orig;
+  const { x: nx, y: ny, w: nw, h: nh } = next;
+  const sp = (px: number, py: number) => ({
+    x: nx + (ow > 0 ? ((px - ox) / ow) * nw : 0),
+    y: ny + (oh > 0 ? ((py - oy) / oh) * nh : 0),
+  });
+  switch (el.type) {
+    case "stroke":
+      return { ...el, points: el.points.map((p) => sp(p.x, p.y)) };
+    case "line":
+    case "arrow": {
+      const p1 = sp(el.x1, el.y1), p2 = sp(el.x2, el.y2);
+      return { ...el, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y };
+    }
+    case "text": {
+      const newFs = Math.max(8, Math.round(el.fontSize * (oh > 0 ? nh / oh : 1)));
+      return { ...el, x: nx, y: ny + newFs, fontSize: newFs };
+    }
+    case "rect":
+      return { ...el, x: nx, y: ny, w: Math.max(10, nw), h: Math.max(10, nh) };
+    case "ellipse":
+      return { ...el, cx: nx + nw / 2, cy: ny + nh / 2, rx: Math.max(5, nw / 2), ry: Math.max(5, nh / 2) };
+    case "image":
+      return { ...el, x: nx, y: ny, w: Math.max(10, nw), h: Math.max(10, nh) };
+  }
+}
+
+function rotateCoords(el: DrawElement, angle: number): DrawElement {
+  const b = getBounds(el);
+  const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  const rp = (x: number, y: number) => ({
+    x: cx + (x - cx) * cos - (y - cy) * sin,
+    y: cy + (x - cx) * sin + (y - cy) * cos,
+  });
+  if (el.type === "stroke") return { ...el, points: el.points.map((p) => rp(p.x, p.y)) };
+  if (el.type === "line" || el.type === "arrow") {
+    const p1 = rp(el.x1, el.y1), p2 = rp(el.x2, el.y2);
+    return { ...el, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y };
+  }
+  return { ...el, rotation: angle } as DrawElement;
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type PreviewShape =
@@ -1007,32 +1055,36 @@ export default function WhiteboardCanvas({
     const now = Date.now();
     const trail = laserTrailRef.current.filter((p) => now - p.t < 2000);
     laserTrailRef.current = trail;
-    if (trail.length > 1 && toolRef.current === "laser") {
+    if (toolRef.current === "laser") {
       ctx.setTransform(zoom, 0, 0, zoom, panX, panY);
       ctx.save();
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      for (let i = 1; i < trail.length; i++) {
-        const age = (now - trail[i].t) / 2000;
-        ctx.globalAlpha = (1 - age) * 0.85;
-        ctx.strokeStyle = "#ef4444";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.moveTo(trail[i - 1].x, trail[i - 1].y);
-        ctx.lineTo(trail[i].x, trail[i].y);
-        ctx.stroke();
+      if (trail.length > 1) {
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        for (let i = 1; i < trail.length; i++) {
+          const age = (now - trail[i].t) / 2000;
+          ctx.globalAlpha = (1 - age) * 0.85;
+          ctx.strokeStyle = "#ef4444";
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.moveTo(trail[i - 1].x, trail[i - 1].y);
+          ctx.lineTo(trail[i].x, trail[i].y);
+          ctx.stroke();
+        }
       }
-      // Dot at tip
-      if (trail.length > 0) {
-        const tip = trail[trail.length - 1];
+      // Dot: follow mouse immediately; trail tip only while actively drawing
+      const dotPos = drawingRef.current.active && trail.length > 0
+        ? trail[trail.length - 1]
+        : mousePosRef.current;
+      if (dotPos) {
         ctx.globalAlpha = 1;
         ctx.fillStyle = "#ef4444";
         ctx.beginPath();
-        ctx.arc(tip.x, tip.y, 5, 0, Math.PI * 2);
+        ctx.arc(dotPos.x, dotPos.y, 5, 0, Math.PI * 2);
         ctx.fill();
         ctx.fillStyle = "#ffffff";
         ctx.beginPath();
-        ctx.arc(tip.x, tip.y, 2.5, 0, Math.PI * 2);
+        ctx.arc(dotPos.x, dotPos.y, 2.5, 0, Math.PI * 2);
         ctx.fill();
       }
       ctx.restore();
@@ -1041,7 +1093,7 @@ export default function WhiteboardCanvas({
     // Resize + rotation handles for single selected element (select tool)
     if (selIds.length === 1 && toolRef.current === "select" && !ds?.active) {
       const el = elementsRef.current.find((e) => e.id === selIds[0]);
-      if (el && (el.type === "rect" || el.type === "image" || el.type === "ellipse")) {
+      if (el) {
         ctx.setTransform(zoom, 0, 0, zoom, panX, panY);
         const b = getBounds(el);
         const mx = b.x + b.w / 2;
@@ -1359,7 +1411,7 @@ export default function WhiteboardCanvas({
         // Check resize / rotation handles for single selection
         if (selectedIdsRef.current.length === 1) {
           const selEl = elementsRef.current.find((e) => e.id === selectedIdsRef.current[0]);
-          if (selEl && (selEl.type === "rect" || selEl.type === "image" || selEl.type === "ellipse")) {
+          if (selEl) {
             const b = getBounds(selEl);
             const mx = b.x + b.w / 2, my = b.y + b.h / 2;
             const hw = b.w / 2 + 6, hh = b.h / 2 + 6;
@@ -1522,53 +1574,41 @@ export default function WhiteboardCanvas({
       // Handle drag (resize/rotate)
       if (handleDragRef.current) {
         const hd = handleDragRef.current;
-        const snap = hd.snapshot;
         if (hd.type === "rotate") {
-          // Compute angle from element center to mouse
-          const b = getBounds(snap);
+          // Always rotate from the original snapshot to avoid drift
+          const orig = hd.originalSnapshot;
+          const b = getBounds(orig);
           const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
-          const angle = Math.atan2(pt.y - cy, pt.x - cx) + Math.PI / 2;
-          const updated = { ...snap, rotation: angle } as DrawElement;
-          onErase([snap.id]);
+          let angle = Math.atan2(pt.y - cy, pt.x - cx) + Math.PI / 2;
+          if (e.shiftKey) {
+            const step = Math.PI / 4;
+            angle = Math.round(angle / step) * step;
+          }
+          const updated = rotateCoords(orig, angle);
+          onErase([orig.id]);
           onElementComplete(updated);
-          // Update snapshot for continuous drag
           hd.snapshot = updated;
           return;
         } else if (hd.type === "resize") {
+          const snap = hd.snapshot;
           const handle = hd.handle;
-          if (snap.type === "rect") {
-            let { x, y, w, h } = snap;
-            if (handle === "se") { w = Math.max(10, pt.x - x); h = Math.max(10, pt.y - y); }
-            else if (handle === "sw") { w = Math.max(10, (x + w) - pt.x); x = pt.x; h = Math.max(10, pt.y - y); }
-            else if (handle === "ne") { w = Math.max(10, pt.x - x); h = Math.max(10, (y + h) - pt.y); y = pt.y; }
-            else if (handle === "nw") { w = Math.max(10, (x + w) - pt.x); x = pt.x; h = Math.max(10, (y + h) - pt.y); y = pt.y; }
-            const updated = { ...snap, x, y, w, h };
-            onErase([snap.id]);
-            onElementComplete(updated);
-            hd.snapshot = updated;
-          } else if (snap.type === "ellipse") {
-            let { cx, cy, rx, ry } = snap;
-            const bx = cx - rx, by = cy - ry, bw = rx * 2, bh = ry * 2;
-            let nx = bx, ny = by, nw = bw, nh = bh;
-            if (handle === "se") { nw = Math.max(10, pt.x - nx); nh = Math.max(10, pt.y - ny); }
-            else if (handle === "sw") { nw = Math.max(10, (bx + bw) - pt.x); nx = pt.x; nh = Math.max(10, pt.y - ny); }
-            else if (handle === "ne") { nw = Math.max(10, pt.x - nx); nh = Math.max(10, (by + bh) - pt.y); ny = pt.y; }
-            else if (handle === "nw") { nw = Math.max(10, (bx + bw) - pt.x); nx = pt.x; nh = Math.max(10, (by + bh) - pt.y); ny = pt.y; }
-            const updated = { ...snap, cx: nx + nw / 2, cy: ny + nh / 2, rx: nw / 2, ry: nh / 2 };
-            onErase([snap.id]);
-            onElementComplete(updated);
-            hd.snapshot = updated;
-          } else if (snap.type === "image") {
-            let { x, y, w, h } = snap;
-            if (handle === "se") { w = Math.max(10, pt.x - x); h = Math.max(10, pt.y - y); }
-            else if (handle === "sw") { w = Math.max(10, (x + w) - pt.x); x = pt.x; h = Math.max(10, pt.y - y); }
-            else if (handle === "ne") { w = Math.max(10, pt.x - x); h = Math.max(10, (y + h) - pt.y); y = pt.y; }
-            else if (handle === "nw") { w = Math.max(10, (x + w) - pt.x); x = pt.x; h = Math.max(10, (y + h) - pt.y); y = pt.y; }
-            const updated = { ...snap, x, y, w, h };
-            onErase([snap.id]);
-            onElementComplete(updated);
-            hd.snapshot = updated;
+          const b = getBounds(snap);
+          let { x: nx, y: ny, w: nw, h: nh } = b;
+          if (handle === "se") { nw = Math.max(10, pt.x - nx); nh = Math.max(10, pt.y - ny); }
+          else if (handle === "sw") { nw = Math.max(10, (b.x + b.w) - pt.x); nx = pt.x; nh = Math.max(10, pt.y - ny); }
+          else if (handle === "ne") { nw = Math.max(10, pt.x - nx); nh = Math.max(10, (b.y + b.h) - pt.y); ny = pt.y; }
+          else if (handle === "nw") { nw = Math.max(10, (b.x + b.w) - pt.x); nx = pt.x; nh = Math.max(10, (b.y + b.h) - pt.y); ny = pt.y; }
+          if (e.shiftKey && b.w > 0 && b.h > 0) {
+            const ar = b.w / b.h;
+            if (nw / nh > ar) { nw = nh * ar; } else { nh = nw / ar; }
+            if (handle === "nw") { nx = b.x + b.w - nw; ny = b.y + b.h - nh; }
+            else if (handle === "ne") { ny = b.y + b.h - nh; }
+            else if (handle === "sw") { nx = b.x + b.w - nw; }
           }
+          const updated = scaleElement(snap, b, { x: nx, y: ny, w: nw, h: nh });
+          onErase([snap.id]);
+          onElementComplete(updated);
+          hd.snapshot = updated;
           return;
         }
       }
@@ -1935,15 +1975,6 @@ export default function WhiteboardCanvas({
             <path d="M21 7v6h-6" /><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13" />
           </svg>
         </button>
-        <button
-          title="Clear all"
-          onClick={onClear}
-          className="w-9 h-9 rounded-lg flex items-center justify-center text-gray-500 hover:bg-red-50 hover:text-red-500 transition"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">
-            <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6" /><path d="M14 11v6" /><path d="M9 6V4h6v2" />
-          </svg>
-        </button>
 
         <div className="w-px h-6 bg-gray-200 mx-1" />
 
@@ -2060,6 +2091,8 @@ export default function WhiteboardCanvas({
         >
           <button
             onClick={() => {
+              const toDelete = elementsRef.current.filter((el) => contextMenu.elementIds.includes(el.id));
+              pushUndo({ added: [], removed: toDelete });
               onErase(contextMenu.elementIds);
               setSelectedIds([]);
               selectedIdsRef.current = [];

@@ -121,24 +121,6 @@ export default function Whiteboard({ roomId }: WhiteboardProps) {
 
   return (
     <div className="relative flex flex-col w-full h-full">
-      {/* Status bar */}
-      <div className="shrink-0 h-8 bg-slate-900 border-b border-slate-700 flex items-center px-3 gap-3 text-xs text-slate-400 z-20 select-none">
-        <span
-          className={`inline-block w-2 h-2 rounded-full ${connected ? "bg-emerald-400" : "bg-red-500"}`}
-        />
-        <span className="font-mono text-slate-300">{roomId}</span>
-        <span className="text-slate-600">·</span>
-        <span>
-          Player {playerIndex + 1}{" "}
-          <span
-            className="inline-block w-2 h-2 rounded-full ml-0.5 align-middle"
-            style={{ background: playerIndex === 0 ? "#6366f1" : "#f59e0b" }}
-          />
-        </span>
-        <span className="text-slate-600 hidden sm:inline">·</span>
-        <span className="hidden sm:inline text-slate-500">Share the URL to collaborate</span>
-      </div>
-
       {/* Canvas */}
       <div className="flex-1 overflow-hidden">
         <WhiteboardCanvas

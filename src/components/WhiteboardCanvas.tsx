@@ -32,11 +32,11 @@ const COLORS = [
 
 const STROKE_WIDTHS = [2, 6, 14];
 const PLAYER_COLORS = ["#6366f1", "#f59e0b"];
-const GRID_SIZE = 32;
 const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 20;
 
 const TOOL_LABELS: Record<ToolType, string> = {
+  select: "Select",
   pen: "Pen",
   rect: "Rect",
   ellipse: "Ellipse",
@@ -44,9 +44,11 @@ const TOOL_LABELS: Record<ToolType, string> = {
   arrow: "Arrow",
   text: "Text",
   eraser: "Eraser",
+  fill: "Fill",
 };
 
 const TOOL_TIPS: Record<ToolType, string> = {
+  select: "Click · shift+click · drag to select · drag selection to move · right-click for options",
   pen: "Draw freehand",
   rect: "Click & drag to draw a rectangle",
   ellipse: "Click & drag to draw an ellipse",
@@ -54,9 +56,15 @@ const TOOL_TIPS: Record<ToolType, string> = {
   arrow: "Click & drag to draw an arrow",
   text: "Click anywhere to place text, then press Enter",
   eraser: "Click & drag to erase",
+  fill: "Click a shape to fill it with the selected color",
 };
 
 const TOOL_ICONS: Record<ToolType, React.ReactNode> = {
+  select: (
+    <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor">
+      <path d="M4 2.5l16 10.5-7.5 1.5L9 22z" />
+    </svg>
+  ),
   pen: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
       <path d="M12 20h9" />
@@ -95,6 +103,11 @@ const TOOL_ICONS: Record<ToolType, React.ReactNode> = {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
       <path d="M20 20H7L3 16l10-10 7 7-2.5 2.5" />
       <path d="M6.0006 11L13 18" />
+    </svg>
+  ),
+  fill: (
+    <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" className="w-5 h-5">
+      <path d="M12 2C12 2 5 10.5 5 15a7 7 0 0 0 14 0C19 10.5 12 2 12 2z" />
     </svg>
   ),
 };
@@ -161,12 +174,32 @@ function renderElement(ctx: CanvasRenderingContext2D, el: DrawElement) {
 
   switch (el.type) {
     case "stroke":
+      if (el.fillColor && el.points.length > 1) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(el.points[0].x, el.points[0].y);
+        for (let i = 1; i < el.points.length - 1; i++) {
+          const mx = (el.points[i].x + el.points[i + 1].x) / 2;
+          const my = (el.points[i].y + el.points[i + 1].y) / 2;
+          ctx.quadraticCurveTo(el.points[i].x, el.points[i].y, mx, my);
+        }
+        ctx.closePath();
+        ctx.fillStyle = el.fillColor;
+        ctx.fill();
+        ctx.restore();
+      }
       drawSmoothedStroke(ctx, el.points, el.color, el.width);
       break;
     case "rect":
       ctx.strokeStyle = el.color;
       ctx.lineWidth = el.width;
-      if (el.filled) { ctx.fillStyle = el.color + "33"; ctx.fillRect(el.x, el.y, el.w, el.h); }
+      if (el.fillColor) {
+        ctx.fillStyle = el.fillColor;
+        ctx.fillRect(el.x, el.y, el.w, el.h);
+      } else if (el.filled) {
+        ctx.fillStyle = el.color + "33";
+        ctx.fillRect(el.x, el.y, el.w, el.h);
+      }
       ctx.strokeRect(el.x, el.y, el.w, el.h);
       break;
     case "ellipse":
@@ -174,7 +207,13 @@ function renderElement(ctx: CanvasRenderingContext2D, el: DrawElement) {
       ctx.lineWidth = el.width;
       ctx.beginPath();
       ctx.ellipse(el.cx, el.cy, el.rx, el.ry, 0, 0, Math.PI * 2);
-      if (el.filled) { ctx.fillStyle = el.color + "33"; ctx.fill(); }
+      if (el.fillColor) {
+        ctx.fillStyle = el.fillColor;
+        ctx.fill();
+      } else if (el.filled) {
+        ctx.fillStyle = el.color + "33";
+        ctx.fill();
+      }
       ctx.stroke();
       break;
     case "line":
@@ -185,15 +224,18 @@ function renderElement(ctx: CanvasRenderingContext2D, el: DrawElement) {
       ctx.lineTo(el.x2, el.y2);
       ctx.stroke();
       break;
-    case "arrow":
+    case "arrow": {
+      const aHeadLen = Math.max(16, el.width * 4);
+      const aAngle = Math.atan2(el.y2 - el.y1, el.x2 - el.x1);
       ctx.strokeStyle = el.color;
       ctx.lineWidth = el.width;
       ctx.beginPath();
       ctx.moveTo(el.x1, el.y1);
-      ctx.lineTo(el.x2, el.y2);
+      ctx.lineTo(el.x2 - aHeadLen * Math.cos(aAngle), el.y2 - aHeadLen * Math.sin(aAngle));
       ctx.stroke();
       drawArrowHead(ctx, el.x1, el.y1, el.x2, el.y2, el.width, el.color);
       break;
+    }
     case "text":
       ctx.fillStyle = el.color;
       ctx.font = `${el.fontSize}px sans-serif`;
@@ -280,6 +322,74 @@ function elementHitByEraser(el: DrawElement, eraserPoints: Point[], radius: numb
   }
 }
 
+// ── Point-in-polygon (ray casting) ───────────────────────────────────────────
+
+function pointInPath(points: Point[], px: number, py: number): boolean {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const xi = points[i].x, yi = points[i].y;
+    const xj = points[j].x, yj = points[j].y;
+    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+// ── Select tool helpers ───────────────────────────────────────────────────────
+
+function getBounds(el: DrawElement): { x: number; y: number; w: number; h: number } {
+  switch (el.type) {
+    case "stroke": {
+      const xs = el.points.map((p) => p.x);
+      const ys = el.points.map((p) => p.y);
+      const minX = Math.min(...xs), minY = Math.min(...ys);
+      return { x: minX, y: minY, w: Math.max(...xs) - minX, h: Math.max(...ys) - minY };
+    }
+    case "rect":
+      return { x: el.x, y: el.y, w: el.w, h: el.h };
+    case "ellipse":
+      return { x: el.cx - el.rx, y: el.cy - el.ry, w: el.rx * 2, h: el.ry * 2 };
+    case "line":
+    case "arrow": {
+      const minX = Math.min(el.x1, el.x2), minY = Math.min(el.y1, el.y2);
+      return { x: minX, y: minY, w: Math.abs(el.x2 - el.x1), h: Math.abs(el.y2 - el.y1) };
+    }
+    case "text": {
+      const lines = el.text.split("\n");
+      const approxW = Math.max(...lines.map((l) => l.length)) * el.fontSize * 0.55 + 16;
+      return { x: el.x, y: el.y - el.fontSize, w: approxW, h: lines.length * el.fontSize * 1.3 };
+    }
+  }
+}
+
+function hitTestElement(el: DrawElement, wx: number, wy: number): boolean {
+  const pad = el.type === "line" || el.type === "arrow" || el.type === "stroke" ? 10 : 4;
+  const b = getBounds(el);
+  return wx >= b.x - pad && wx <= b.x + b.w + pad && wy >= b.y - pad && wy <= b.y + b.h + pad;
+}
+
+function elementInRect(el: DrawElement, minX: number, minY: number, maxX: number, maxY: number): boolean {
+  const b = getBounds(el);
+  return b.x < maxX && b.x + b.w > minX && b.y < maxY && b.y + b.h > minY;
+}
+
+function translateElement(el: DrawElement, dx: number, dy: number): DrawElement {
+  switch (el.type) {
+    case "stroke":
+      return { ...el, points: el.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) };
+    case "rect":
+      return { ...el, x: el.x + dx, y: el.y + dy };
+    case "ellipse":
+      return { ...el, cx: el.cx + dx, cy: el.cy + dy };
+    case "line":
+    case "arrow":
+      return { ...el, x1: el.x1 + dx, y1: el.y1 + dy, x2: el.x2 + dx, y2: el.y2 + dy };
+    case "text":
+      return { ...el, x: el.x + dx, y: el.y + dy };
+  }
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type PreviewShape =
@@ -299,6 +409,7 @@ interface WhiteboardCanvasProps {
   onUndo: (playerIndex: number) => void;
   onErase: (ids: string[]) => void;
   onClear: () => void;
+  onReorder: (id: string, action: string) => void;
 }
 
 interface TextInputState {
@@ -319,12 +430,13 @@ export default function WhiteboardCanvas({
   onUndo,
   onErase,
   onClear,
+  onReorder,
 }: WhiteboardCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number>(0);
 
-  // View (pan + zoom) — stored in a ref for the render loop, mirrored to state for UI
+  // View (pan + zoom)
   const viewRef = useRef({ panX: 0, panY: 0, zoom: 1 });
   const [zoomDisplay, setZoomDisplay] = useState(100);
 
@@ -340,20 +452,46 @@ export default function WhiteboardCanvas({
   const [strokeWidth, setStrokeWidth] = useState(STROKE_WIDTHS[1]);
   const [filled, setFilled] = useState(false);
 
-  // Text input (canvas-based — no DOM input element)
+  // Text input (canvas-based)
   const [textInput, setTextInput] = useState<TextInputState | null>(null);
   const [textValue, setTextValue] = useState("");
-  const textValueRef = useRef("");           // for render loop access
-  const textInputPosRef = useRef<TextInputState | null>(null); // for render loop access
-  const textActiveRef = useRef(false);       // for space-key handler
-  const cursorPosRef = useRef(0);            // character index within textValue
+  const textValueRef = useRef("");
+  const textInputPosRef = useRef<TextInputState | null>(null);
+  const textActiveRef = useRef(false);
+  const cursorPosRef = useRef(0);
 
-  // Drawing state in refs (no re-render on each mouse move)
+  // Drawing state
   const drawingRef = useRef({ active: false, startX: 0, startY: 0, points: [] as Point[] });
   const previewRef = useRef<PreviewShape | null>(null);
   const eraserRef = useRef<Point[]>([]);
   const lastSocketSendRef = useRef(0);
   const mousePosRef = useRef<Point | null>(null);
+
+  // Multi-select state
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const selectedIdsRef = useRef<string[]>([]);
+
+  // Drag state for select tool (holds snapshots of all selected elements at drag start)
+  const dragStateRef = useRef<{
+    active: boolean;
+    elementSnapshots: DrawElement[];
+    startX: number;
+    startY: number;
+    currentX: number;
+    currentY: number;
+  } | null>(null);
+
+  // Marquee (drag-to-select) state
+  const marqueeRef = useRef<{
+    active: boolean;
+    startX: number;
+    startY: number;
+    currentX: number;
+    currentY: number;
+  } | null>(null);
+
+  // Context menu: holds the IDs to act on (either the selection or a single right-clicked element)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; elementIds: string[] } | null>(null);
 
   // Stable refs for callbacks
   const toolRef = useRef(tool);
@@ -371,6 +509,7 @@ export default function WhiteboardCanvas({
   useEffect(() => { elementsRef.current = elements; }, [elements]);
   useEffect(() => { textValueRef.current = textValue; }, [textValue]);
   useEffect(() => { textInputPosRef.current = textInput; textActiveRef.current = !!textInput; }, [textInput]);
+  useEffect(() => { selectedIdsRef.current = selectedIds; }, [selectedIds]);
 
   // ── Canvas resize ─────────────────────────────────────────────────────────────
 
@@ -412,16 +551,31 @@ export default function WhiteboardCanvas({
     const H = canvas.height;
     const { panX, panY, zoom } = viewRef.current;
 
-    // Clear in screen space
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, W, H);
 
-    // Apply pan/zoom — everything below is in world coordinates
     ctx.setTransform(zoom, 0, 0, zoom, panX, panY);
 
-    // Committed elements
-    for (const el of elementsRef.current) renderElement(ctx, el);
+    // Committed elements — skip elements currently being dragged
+    const ds = dragStateRef.current;
+    const draggingSet = ds?.active ? new Set(ds.elementSnapshots.map((e) => e.id)) : null;
+    for (const el of elementsRef.current) {
+      if (draggingSet?.has(el.id)) continue;
+      renderElement(ctx, el);
+    }
+
+    // Dragged elements rendered at their offset position
+    if (ds?.active) {
+      const dx = ds.currentX - ds.startX;
+      const dy = ds.currentY - ds.startY;
+      ctx.save();
+      ctx.globalAlpha = 0.85;
+      for (const snap of ds.elementSnapshots) {
+        renderElement(ctx, translateElement(snap, dx, dy));
+      }
+      ctx.restore();
+    }
 
     // Remote preview
     if (remotePreview) {
@@ -440,7 +594,16 @@ export default function WhiteboardCanvas({
         ctx.beginPath(); ctx.ellipse(rp.cx, rp.cy, rp.rx, rp.ry, 0, 0, Math.PI * 2); ctx.stroke();
       } else if (rp.type === "line" || rp.type === "arrow") {
         ctx.strokeStyle = rp.color; ctx.lineWidth = rp.width;
-        ctx.beginPath(); ctx.moveTo(rp.x1, rp.y1); ctx.lineTo(rp.x2, rp.y2); ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(rp.x1, rp.y1);
+        if (rp.type === "arrow") {
+          const rpHL = Math.max(16, rp.width * 4);
+          const rpA = Math.atan2(rp.y2 - rp.y1, rp.x2 - rp.x1);
+          ctx.lineTo(rp.x2 - rpHL * Math.cos(rpA), rp.y2 - rpHL * Math.sin(rpA));
+        } else {
+          ctx.lineTo(rp.x2, rp.y2);
+        }
+        ctx.stroke();
         if (rp.type === "arrow") drawArrowHead(ctx, rp.x1, rp.y1, rp.x2, rp.y2, rp.width, rp.color);
       }
       ctx.restore();
@@ -462,13 +625,22 @@ export default function WhiteboardCanvas({
         if (p.filled) { ctx.fillStyle = p.color + "33"; ctx.fill(); }
         ctx.stroke();
       } else if (p.type === "line" || p.type === "arrow") {
-        ctx.beginPath(); ctx.moveTo(p.x1, p.y1); ctx.lineTo(p.x2, p.y2); ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(p.x1, p.y1);
+        if (p.type === "arrow") {
+          const pHL = Math.max(16, p.width * 4);
+          const pA = Math.atan2(p.y2 - p.y1, p.x2 - p.x1);
+          ctx.lineTo(p.x2 - pHL * Math.cos(pA), p.y2 - pHL * Math.sin(pA));
+        } else {
+          ctx.lineTo(p.x2, p.y2);
+        }
+        ctx.stroke();
         if (p.type === "arrow") drawArrowHead(ctx, p.x1, p.y1, p.x2, p.y2, p.width, p.color);
       }
       ctx.restore();
     }
 
-    // Text preview while typing (world space, multiline)
+    // Text preview while typing
     if (textInputPosRef.current) {
       const { worldX, worldY } = textInputPosRef.current;
       const tv = textValueRef.current;
@@ -479,14 +651,12 @@ export default function WhiteboardCanvas({
       ctx.fillStyle = colorRef.current;
       ctx.font = "28px sans-serif";
       lines.forEach((line, i) => ctx.fillText(line, worldX, worldY + i * lineH));
-      // Blinking cursor at correct character position
       if (showCursor) {
         const { line: curLine, col: curCol } = getLineCol(tv, cursorPosRef.current);
         const cursorX = worldX + ctx.measureText(lines[curLine].slice(0, curCol)).width;
         const cursorY = worldY + curLine * lineH;
         ctx.fillRect(cursorX, cursorY - 24, 2 / zoom, 30);
       }
-      // dashed underline on first line
       const underW = ctx.measureText((lines[0] || " ") + "  ").width;
       ctx.strokeStyle = colorRef.current;
       ctx.lineWidth = 1.5 / zoom;
@@ -498,7 +668,51 @@ export default function WhiteboardCanvas({
       ctx.restore();
     }
 
-    // Eraser circle — drawn in screen space so it stays constant size
+    // Selection bounding box (combined bounds of all selected elements)
+    const selIds = selectedIdsRef.current;
+    if (selIds.length > 0 && toolRef.current === "select") {
+      const dragOff = ds?.active ? { dx: ds.currentX - ds.startX, dy: ds.currentY - ds.startY } : { dx: 0, dy: 0 };
+      let bMinX = Infinity, bMinY = Infinity, bMaxX = -Infinity, bMaxY = -Infinity;
+      for (const id of selIds) {
+        let el = elementsRef.current.find((e) => e.id === id);
+        if (!el) continue;
+        if (ds?.active) el = translateElement(el, dragOff.dx, dragOff.dy);
+        const b = getBounds(el);
+        bMinX = Math.min(bMinX, b.x);
+        bMinY = Math.min(bMinY, b.y);
+        bMaxX = Math.max(bMaxX, b.x + b.w);
+        bMaxY = Math.max(bMaxY, b.y + b.h);
+      }
+      if (bMinX !== Infinity) {
+        ctx.setTransform(zoom, 0, 0, zoom, panX, panY);
+        ctx.save();
+        ctx.strokeStyle = "#6366f1";
+        ctx.lineWidth = 2 / zoom;
+        ctx.setLineDash([6 / zoom, 3 / zoom]);
+        ctx.strokeRect(bMinX - 6, bMinY - 6, bMaxX - bMinX + 12, bMaxY - bMinY + 12);
+        ctx.restore();
+      }
+    }
+
+    // Marquee selection rectangle
+    const mq = marqueeRef.current;
+    if (mq?.active) {
+      const minX = Math.min(mq.startX, mq.currentX);
+      const minY = Math.min(mq.startY, mq.currentY);
+      const mw = Math.abs(mq.currentX - mq.startX);
+      const mh = Math.abs(mq.currentY - mq.startY);
+      ctx.setTransform(zoom, 0, 0, zoom, panX, panY);
+      ctx.save();
+      ctx.fillStyle = "#6366f133";
+      ctx.fillRect(minX, minY, mw, mh);
+      ctx.strokeStyle = "#6366f1";
+      ctx.lineWidth = 1.5 / zoom;
+      ctx.setLineDash([4 / zoom, 3 / zoom]);
+      ctx.strokeRect(minX, minY, mw, mh);
+      ctx.restore();
+    }
+
+    // Eraser circle (screen space)
     if (toolRef.current === "eraser" && mousePosRef.current) {
       const pos = drawingRef.current.active
         ? drawingRef.current.points[drawingRef.current.points.length - 1]
@@ -520,7 +734,7 @@ export default function WhiteboardCanvas({
       }
     }
 
-    // Remote cursor — drawn in screen space so it stays constant size
+    // Remote cursor (screen space)
     if (remoteCursor) {
       const sx = remoteCursor.x * zoom + panX;
       const sy = remoteCursor.y * zoom + panY;
@@ -572,7 +786,7 @@ export default function WhiteboardCanvas({
     setZoomDisplay(100);
   }, []);
 
-  // ── Wheel: zoom (ctrl) or pan (plain scroll) ───────────────────────────────────
+  // ── Wheel ─────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     const wrapper = wrapperRef.current;
@@ -595,7 +809,7 @@ export default function WhiteboardCanvas({
     return () => wrapper.removeEventListener("wheel", onWheel);
   }, [applyZoom]);
 
-  // ── Space key: pan cursor ─────────────────────────────────────────────────────
+  // ── Space key ─────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -689,7 +903,6 @@ export default function WhiteboardCanvas({
     return () => window.removeEventListener("keydown", onKey);
   }, [textInput, onElementComplete]);
 
-
   // ── Window-level pan tracking ─────────────────────────────────────────────────
 
   useEffect(() => {
@@ -718,35 +931,108 @@ export default function WhiteboardCanvas({
         if (e.key === "+" || e.key === "=") { e.preventDefault(); applyZoom(1.25); }
         if (e.key === "-") { e.preventDefault(); applyZoom(1 / 1.25); }
         if (e.key === "0") { e.preventDefault(); resetView(); }
+        if ((e.key === "Delete" || e.key === "Backspace") && toolRef.current === "select") {
+          if (selectedIdsRef.current.length > 0) {
+            onErase(selectedIdsRef.current);
+            setSelectedIds([]);
+            selectedIdsRef.current = [];
+          }
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [textInput, onUndo, applyZoom, resetView]);
+  }, [textInput, onUndo, applyZoom, resetView, onErase]);
+
+  // ── Close context menu on outside click ──────────────────────────────────────
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onDown = () => setContextMenu(null);
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [contextMenu]);
 
   // ── Mouse handlers ────────────────────────────────────────────────────────────
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       const isPanTrigger = e.button === 1 || (e.button === 0 && spaceDownRef.current);
-
       if (isPanTrigger) {
         e.preventDefault();
         isPanningRef.current = true;
         setCursorOverride("grabbing");
-        panStartRef.current = {
-          screenX: e.clientX,
-          screenY: e.clientY,
-          panX: viewRef.current.panX,
-          panY: viewRef.current.panY,
-        };
+        panStartRef.current = { screenX: e.clientX, screenY: e.clientY, panX: viewRef.current.panX, panY: viewRef.current.panY };
         return;
       }
 
       const pt = toCanvas(e.clientX, e.clientY);
 
+      // ── Select tool ───────────────────────────────────────────────────────────
+      if (toolRef.current === "select") {
+        setContextMenu(null);
+        if (e.button !== 0) return;
+
+        const els = elementsRef.current;
+        let hit: DrawElement | null = null;
+        for (let i = els.length - 1; i >= 0; i--) {
+          if (hitTestElement(els[i], pt.x, pt.y)) { hit = els[i]; break; }
+        }
+
+        if (hit) {
+          if (e.shiftKey) {
+            // Toggle element in/out of selection — no drag
+            const already = selectedIdsRef.current.includes(hit.id);
+            const newIds = already
+              ? selectedIdsRef.current.filter((id) => id !== hit.id)
+              : [...selectedIdsRef.current, hit.id];
+            setSelectedIds(newIds);
+            selectedIdsRef.current = newIds;
+          } else {
+            // If not already selected, replace selection with just this element
+            if (!selectedIdsRef.current.includes(hit.id)) {
+              setSelectedIds([hit.id]);
+              selectedIdsRef.current = [hit.id];
+            }
+            // Start drag for all currently selected elements
+            const snapshots = els.filter((el) => selectedIdsRef.current.includes(el.id));
+            dragStateRef.current = { active: true, elementSnapshots: snapshots, startX: pt.x, startY: pt.y, currentX: pt.x, currentY: pt.y };
+          }
+        } else {
+          // Empty canvas — start marquee; shift keeps existing selection
+          if (!e.shiftKey) {
+            setSelectedIds([]);
+            selectedIdsRef.current = [];
+          }
+          marqueeRef.current = { active: true, startX: pt.x, startY: pt.y, currentX: pt.x, currentY: pt.y };
+        }
+        return;
+      }
+
+      // ── Fill tool ─────────────────────────────────────────────────────────────
+      if (toolRef.current === "fill") {
+        const els = elementsRef.current;
+        for (let i = els.length - 1; i >= 0; i--) {
+          const el = els[i];
+          if (el.type === "rect" || el.type === "ellipse") {
+            if (hitTestElement(el, pt.x, pt.y)) {
+              onErase([el.id]);
+              onElementComplete({ ...el, fillColor: colorRef.current });
+              break;
+            }
+          } else if (el.type === "stroke") {
+            if (pointInPath(el.points, pt.x, pt.y)) {
+              onErase([el.id]);
+              onElementComplete({ ...el, fillColor: colorRef.current });
+              break;
+            }
+          }
+        }
+        return;
+      }
+
+      // ── Text tool click-to-reposition cursor ──────────────────────────────────
       if (textInput) {
-        // Click while typing → move cursor to clicked position
         const ti = textInputPosRef.current;
         const canvas = canvasRef.current;
         const ctx = canvas?.getContext("2d");
@@ -755,9 +1041,7 @@ export default function WhiteboardCanvas({
           const tv = textValueRef.current;
           const lines = tv.split("\n");
           const lineH = 28 * 1.3;
-          const lineIdx = Math.max(0, Math.min(lines.length - 1,
-            Math.floor((pt.y - ti.worldY + 28) / lineH)
-          ));
+          const lineIdx = Math.max(0, Math.min(lines.length - 1, Math.floor((pt.y - ti.worldY + 28) / lineH)));
           const charInLine = findCharInLine(ctx, lines[lineIdx], pt.x - ti.worldX);
           let absPos = 0;
           for (let i = 0; i < lineIdx; i++) absPos += lines[i].length + 1;
@@ -770,12 +1054,9 @@ export default function WhiteboardCanvas({
 
       if (toolRef.current === "text") {
         drawingRef.current.active = false;
-
-        // Check if clicking on an existing text element → edit it
         const existing = elementsRef.current.find(
           (el): el is TextElement => el.type === "text" && hitTestText(el, pt.x, pt.y)
         );
-
         if (existing) {
           onErase([existing.id]);
           setTextInput({ worldX: existing.x, worldY: existing.y });
@@ -790,7 +1071,7 @@ export default function WhiteboardCanvas({
         }
       }
     },
-    [textInput, toCanvas]
+    [textInput, toCanvas, onErase]
   );
 
   const handleMouseMove = useCallback(
@@ -803,8 +1084,19 @@ export default function WhiteboardCanvas({
         onCursorMove(pt.x, pt.y);
         lastSocketSendRef.current = now;
       }
-
       mousePosRef.current = pt;
+
+      // Select tool: update drag or marquee
+      if (toolRef.current === "select") {
+        if (dragStateRef.current?.active) {
+          dragStateRef.current.currentX = pt.x;
+          dragStateRef.current.currentY = pt.y;
+        } else if (marqueeRef.current?.active) {
+          marqueeRef.current.currentX = pt.x;
+          marqueeRef.current.currentY = pt.y;
+        }
+        return;
+      }
 
       if (!drawingRef.current.active) return;
       const { startX, startY } = drawingRef.current;
@@ -816,10 +1108,7 @@ export default function WhiteboardCanvas({
       if (t === "pen") {
         drawingRef.current.points.push(pt);
         previewRef.current = { type: "stroke", points: [...drawingRef.current.points], color: c, width: w };
-        if (now - lastSocketSendRef.current > 33) {
-          onPreviewUpdate({ type: "stroke", points: [...drawingRef.current.points], color: c, width: w });
-          lastSocketSendRef.current = now;
-        }
+        if (now - lastSocketSendRef.current > 33) { onPreviewUpdate({ type: "stroke", points: [...drawingRef.current.points], color: c, width: w }); lastSocketSendRef.current = now; }
       } else if (t === "eraser") {
         drawingRef.current.points.push(pt);
         eraserRef.current = [...drawingRef.current.points];
@@ -844,6 +1133,45 @@ export default function WhiteboardCanvas({
   const handleMouseUp = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       if (isPanningRef.current) return;
+
+      // Select tool: commit drag or marquee
+      if (toolRef.current === "select") {
+        const ds = dragStateRef.current;
+        if (ds?.active) {
+          const pt = toCanvas(e.clientX, e.clientY);
+          const dx = pt.x - ds.startX;
+          const dy = pt.y - ds.startY;
+          if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+            const movedIds = ds.elementSnapshots.map((snap) => snap.id);
+            onErase(movedIds);
+            for (const snap of ds.elementSnapshots) {
+              onElementComplete(translateElement(snap, dx, dy));
+            }
+            setSelectedIds(movedIds);
+            selectedIdsRef.current = movedIds;
+          }
+          dragStateRef.current = null;
+        }
+
+        const mq = marqueeRef.current;
+        if (mq?.active) {
+          const minX = Math.min(mq.startX, mq.currentX);
+          const minY = Math.min(mq.startY, mq.currentY);
+          const maxX = Math.max(mq.startX, mq.currentX);
+          const maxY = Math.max(mq.startY, mq.currentY);
+          if (maxX - minX > 4 || maxY - minY > 4) {
+            const inRect = elementsRef.current.filter((el) => elementInRect(el, minX, minY, maxX, maxY));
+            const newIds = e.shiftKey
+              ? [...new Set([...selectedIdsRef.current, ...inRect.map((el) => el.id)])]
+              : inRect.map((el) => el.id);
+            setSelectedIds(newIds);
+            selectedIdsRef.current = newIds;
+          }
+          marqueeRef.current = null;
+        }
+        return;
+      }
+
       if (!drawingRef.current.active) return;
       drawingRef.current.active = false;
       previewRef.current = null;
@@ -888,6 +1216,11 @@ export default function WhiteboardCanvas({
 
   const handleMouseLeave = useCallback(() => {
     mousePosRef.current = null;
+    if (toolRef.current === "select") {
+      dragStateRef.current = null;
+      marqueeRef.current = null;
+      return;
+    }
     if (drawingRef.current.active) {
       drawingRef.current.active = false;
       previewRef.current = null;
@@ -895,6 +1228,33 @@ export default function WhiteboardCanvas({
       eraserRef.current = [];
     }
   }, [onPreviewUpdate]);
+
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      e.preventDefault();
+      if (toolRef.current !== "select") return;
+      const pt = toCanvas(e.clientX, e.clientY);
+      const els = elementsRef.current;
+      for (let i = els.length - 1; i >= 0; i--) {
+        if (hitTestElement(els[i], pt.x, pt.y)) {
+          // If the hit element is already in the selection, use the full selection;
+          // otherwise select just this element.
+          const hitId = els[i].id;
+          const ids = selectedIdsRef.current.includes(hitId)
+            ? selectedIdsRef.current
+            : [hitId];
+          if (!selectedIdsRef.current.includes(hitId)) {
+            setSelectedIds([hitId]);
+            selectedIdsRef.current = [hitId];
+          }
+          setContextMenu({ x: e.clientX, y: e.clientY, elementIds: ids });
+          return;
+        }
+      }
+      setContextMenu(null);
+    },
+    [toCanvas]
+  );
 
   // ── Tool change (commits active text first) ───────────────────────────────────
 
@@ -914,13 +1274,24 @@ export default function WhiteboardCanvas({
       setTextValue("");
       textValueRef.current = "";
     }
+    if (t !== "select") {
+      setSelectedIds([]);
+      selectedIdsRef.current = [];
+      dragStateRef.current = null;
+      marqueeRef.current = null;
+    }
+    setContextMenu(null);
     setTool(t);
   }, [onElementComplete]);
 
-  // ── Derived UI values ─────────────────────────────────────────────────────────
+  // ── Cursor style ──────────────────────────────────────────────────────────────
 
   const cursorStyle = cursorOverride ?? (
-    tool === "text" ? "text" : tool === "eraser" ? "none" : "crosshair"
+    tool === "select" ? "default" :
+    tool === "text" ? "text" :
+    tool === "eraser" ? "none" :
+    tool === "fill" ? "cell" :
+    "crosshair"
   );
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -928,7 +1299,7 @@ export default function WhiteboardCanvas({
   return (
     <div className="relative w-full h-full bg-gray-100 select-none">
 
-      {/* ── Top toolbar (floating) ─────────────────────────────────────────────── */}
+      {/* ── Top toolbar ────────────────────────────────────────────────────────── */}
       <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1 bg-white rounded-xl shadow-lg border border-gray-200 px-2 py-1.5">
         {(Object.keys(TOOL_LABELS) as ToolType[]).map((t) => (
           <button
@@ -964,9 +1335,8 @@ export default function WhiteboardCanvas({
         </button>
       </div>
 
-      {/* ── Left panel: colors + thickness (floating) ──────────────────────────── */}
+      {/* ── Left panel: colors + thickness ─────────────────────────────────────── */}
       <div className="absolute left-3 top-1/2 -translate-y-1/2 z-20 flex flex-col items-center gap-2 bg-white rounded-xl shadow-lg border border-gray-200 px-2 py-3">
-        {/* Stroke widths */}
         {STROKE_WIDTHS.map((w, i) => (
           <button
             key={w}
@@ -984,7 +1354,6 @@ export default function WhiteboardCanvas({
 
         <div className="w-5 h-px bg-gray-200" />
 
-        {/* Colors */}
         {COLORS.map((c) => (
           <button
             key={c}
@@ -993,45 +1362,24 @@ export default function WhiteboardCanvas({
             className={`w-8 h-8 rounded-lg flex items-center justify-center transition hover:scale-110
               ${color === c ? "ring-2 ring-indigo-400 ring-offset-1" : ""}`}
           >
-            <div
-              className="w-5 h-5 rounded-full border border-gray-300"
-              style={{ background: c }}
-            />
+            <div className="w-5 h-5 rounded-full border border-gray-300" style={{ background: c }} />
           </button>
         ))}
       </div>
 
-      {/* ── Zoom controls (floating, bottom-right) ─────────────────────────────── */}
+      {/* ── Zoom controls ──────────────────────────────────────────────────────── */}
       <div className="absolute bottom-3 right-3 z-20 flex items-center gap-1 bg-white rounded-xl shadow-lg border border-gray-200 px-2 py-1.5">
-        <button
-          title="Zoom out (-)"
-          onClick={() => applyZoom(1 / 1.25)}
-          className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-500 hover:bg-gray-100 hover:text-gray-800 transition font-bold text-base"
-        >
-          −
-        </button>
-        <button
-          title="Reset zoom (0)"
-          onClick={resetView}
-          className="px-2 h-7 rounded-lg flex items-center justify-center text-gray-500 hover:bg-gray-100 hover:text-gray-800 transition text-xs font-mono"
-        >
-          {zoomDisplay}%
-        </button>
-        <button
-          title="Zoom in (+)"
-          onClick={() => applyZoom(1.25)}
-          className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-500 hover:bg-gray-100 hover:text-gray-800 transition font-bold text-base"
-        >
-          +
-        </button>
+        <button title="Zoom out (-)" onClick={() => applyZoom(1 / 1.25)} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-500 hover:bg-gray-100 hover:text-gray-800 transition font-bold text-base">−</button>
+        <button title="Reset zoom (0)" onClick={resetView} className="px-2 h-7 rounded-lg flex items-center justify-center text-gray-500 hover:bg-gray-100 hover:text-gray-800 transition text-xs font-mono">{zoomDisplay}%</button>
+        <button title="Zoom in (+)" onClick={() => applyZoom(1.25)} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-500 hover:bg-gray-100 hover:text-gray-800 transition font-bold text-base">+</button>
       </div>
 
-      {/* ── Tooltip hint below toolbar ────────────────────────────────────────── */}
+      {/* ── Tooltip ────────────────────────────────────────────────────────────── */}
       <div className="absolute top-16 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
         <span className="text-xs text-gray-400">{TOOL_TIPS[tool]}</span>
       </div>
 
-      {/* ── Canvas (fills everything) ──────────────────────────────────────────── */}
+      {/* ── Canvas ─────────────────────────────────────────────────────────────── */}
       <div ref={wrapperRef} className="absolute inset-0 overflow-hidden">
         <canvas
           ref={canvasRef}
@@ -1040,11 +1388,37 @@ export default function WhiteboardCanvas({
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseLeave}
-          onContextMenu={(e) => e.preventDefault()}
+          onContextMenu={handleContextMenu}
         />
       </div>
 
-      {/* Text active hint */}
+      {/* ── Context menu ───────────────────────────────────────────────────────── */}
+      {contextMenu && (
+        <div
+          className="absolute z-50 bg-white rounded-xl shadow-xl border border-gray-200 py-1 min-w-[180px]"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => {
+              onErase(contextMenu.elementIds);
+              setSelectedIds([]);
+              selectedIdsRef.current = [];
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 rounded-t-xl"
+          >
+            Delete{contextMenu.elementIds.length > 1 ? ` (${contextMenu.elementIds.length})` : ""}
+          </button>
+          <div className="h-px bg-gray-100 my-1" />
+          <button onClick={() => { contextMenu.elementIds.forEach((id) => onReorder(id, "front")); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Bring to Front</button>
+          <button onClick={() => { contextMenu.elementIds.forEach((id) => onReorder(id, "forward")); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Bring Forward</button>
+          <button onClick={() => { contextMenu.elementIds.forEach((id) => onReorder(id, "backward")); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Send Backward</button>
+          <button onClick={() => { contextMenu.elementIds.forEach((id) => onReorder(id, "back")); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 rounded-b-xl">Send to Back</button>
+        </div>
+      )}
+
+      {/* ── Text hint ──────────────────────────────────────────────────────────── */}
       {textInput && (
         <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-20 pointer-events-none bg-white/80 rounded-lg px-3 py-1 shadow text-xs text-gray-500">
           Type · <strong>Enter</strong> for new line · <strong>Esc</strong> to place text

@@ -119,6 +119,10 @@ export default function Whiteboard({ roomId }: WhiteboardProps) {
     socketRef.current?.emit("draw:clear");
   }, []);
 
+  const handleReorder = useCallback((id: string, action: string) => {
+    socketRef.current?.emit("draw:reorder", { id, action });
+  }, []);
+
   return (
     <div className="relative flex flex-col w-full h-full">
       {/* Canvas */}
@@ -134,6 +138,7 @@ export default function Whiteboard({ roomId }: WhiteboardProps) {
           onUndo={handleUndo}
           onErase={handleErase}
           onClear={handleClear}
+          onReorder={handleReorder}
         />
       </div>
     </div>

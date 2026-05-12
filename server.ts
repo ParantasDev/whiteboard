@@ -65,6 +65,18 @@ app.prepare().then(() => {
       socket.to(currentRoom).emit("draw:element", el);
     });
 
+    // Move elements in-place (preserves z-order)
+    socket.on("draw:move", (updates: { id: string; element: DrawElement }[]) => {
+      if (!currentRoom) return;
+      const room = rooms.get(currentRoom);
+      if (!room) return;
+      for (const { id, element } of updates) {
+        const idx = room.elements.findIndex((el) => el.id === id);
+        if (idx !== -1) room.elements[idx] = { ...element, playerIndex: myPlayerIndex };
+      }
+      socket.to(currentRoom).emit("draw:move", updates);
+    });
+
     // In-progress preview (throttled by client)
     socket.on("draw:preview", (data: unknown) => {
       if (!currentRoom) return;

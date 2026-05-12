@@ -654,6 +654,7 @@ interface WhiteboardCanvasProps {
   onErase: (ids: string[]) => void;
   onClear: () => void;
   onReorder: (id: string, action: string) => void;
+  onMoveElements: (elements: DrawElement[]) => void;
 }
 
 interface TextInputState {
@@ -675,6 +676,7 @@ export default function WhiteboardCanvas({
   onErase,
   onClear,
   onReorder,
+  onMoveElements,
 }: WhiteboardCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -704,6 +706,8 @@ export default function WhiteboardCanvas({
   const textInputPosRef = useRef<TextInputState | null>(null);
   const textActiveRef = useRef(false);
   const cursorPosRef = useRef(0);
+  const selectionStartRef = useRef<number | null>(null);
+  const textDragRef = useRef<boolean>(false);
 
   // Drawing state
   const drawingRef = useRef({ active: false, startX: 0, startY: 0, points: [] as Point[] });
@@ -941,9 +945,38 @@ export default function WhiteboardCanvas({
       const fs = fontSizeRef.current;
       const lineH = fs * 1.3;
       const showCursor = Math.floor(Date.now() / 530) % 2 === 0;
+      const selStart = selectionStartRef.current;
+      const curPos = cursorPosRef.current;
+      const hasSelection = selStart !== null && selStart !== curPos;
+
       ctx.save();
-      ctx.fillStyle = colorRef.current;
       ctx.font = `${fs}px sans-serif`;
+
+      // Draw selection background
+      if (hasSelection) {
+        const selectionStart = Math.min(selStart!, curPos);
+        const selectionEnd = Math.max(selStart!, curPos);
+        ctx.fillStyle = "rgba(99, 102, 241, 0.3)";
+
+        let charPos = 0;
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          const lineStart = charPos;
+          const lineEnd = charPos + line.length;
+
+          if (selectionEnd > lineStart && selectionStart < lineEnd) {
+            const colStart = Math.max(0, selectionStart - lineStart);
+            const colEnd = Math.min(line.length, selectionEnd - lineStart);
+            const selX1 = worldX + ctx.measureText(line.slice(0, colStart)).width;
+            const selX2 = worldX + ctx.measureText(line.slice(0, colEnd)).width;
+            const selY1 = worldY + i * lineH - fs * 0.85;
+            ctx.fillRect(selX1, selY1, selX2 - selX1, fs * 1.1);
+          }
+          charPos = lineEnd + 1;
+        }
+      }
+
+      ctx.fillStyle = colorRef.current;
       lines.forEach((line, i) => ctx.fillText(line, worldX, worldY + i * lineH));
       if (showCursor) {
         const { line: curLine, col: curCol } = getLineCol(tv, cursorPosRef.current);
@@ -1325,54 +1358,207 @@ export default function WhiteboardCanvas({
     };
 
     const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      const text = textValueRef.current;
+      const pos = cursorPosRef.current;
+      const hasSelection = selectionStartRef.current !== null && selectionStartRef.current !== pos;
+
       if (e.key === "Escape") {
         e.preventDefault();
         commitCurrentText();
         cursorPosRef.current = 0;
+        selectionStartRef.current = null;
+      } else if (mod && e.key === "a") {
+        e.preventDefault();
+        selectionStartRef.current = 0;
+        cursorPosRef.current = text.length;
       } else if (e.key === "ArrowLeft") {
         e.preventDefault();
-        cursorPosRef.current = Math.max(0, cursorPosRef.current - 1);
+        const newPos = Math.max(0, pos - 1);
+        if (e.shiftKey) {
+          if (selectionStartRef.current === null) selectionStartRef.current = pos;
+          cursorPosRef.current = newPos;
+        } else {
+          cursorPosRef.current = newPos;
+          selectionStartRef.current = null;
+        }
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
-        cursorPosRef.current = Math.min(textValueRef.current.length, cursorPosRef.current + 1);
+        const newPos = Math.min(text.length, pos + 1);
+        if (e.shiftKey) {
+          if (selectionStartRef.current === null) selectionStartRef.current = pos;
+          cursorPosRef.current = newPos;
+        } else {
+          cursorPosRef.current = newPos;
+          selectionStartRef.current = null;
+        }
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
-        cursorPosRef.current = moveCursorVertical(textValueRef.current, cursorPosRef.current, -1);
+        const newPos = moveCursorVertical(text, pos, -1);
+        if (e.shiftKey) {
+          if (selectionStartRef.current === null) selectionStartRef.current = pos;
+          cursorPosRef.current = newPos;
+        } else {
+          cursorPosRef.current = newPos;
+          selectionStartRef.current = null;
+        }
       } else if (e.key === "ArrowDown") {
         e.preventDefault();
-        cursorPosRef.current = moveCursorVertical(textValueRef.current, cursorPosRef.current, 1);
+        const newPos = moveCursorVertical(text, pos, 1);
+        if (e.shiftKey) {
+          if (selectionStartRef.current === null) selectionStartRef.current = pos;
+          cursorPosRef.current = newPos;
+        } else {
+          cursorPosRef.current = newPos;
+          selectionStartRef.current = null;
+        }
+      } else if (e.key === "Home") {
+        e.preventDefault();
+        const { line, col } = getLineCol(text, pos);
+        const lines = text.split("\n");
+        let lineStart = 0;
+        for (let i = 0; i < line; i++) lineStart += lines[i].length + 1;
+        if (e.shiftKey) {
+          if (selectionStartRef.current === null) selectionStartRef.current = pos;
+          cursorPosRef.current = lineStart;
+        } else {
+          cursorPosRef.current = lineStart;
+          selectionStartRef.current = null;
+        }
+      } else if (e.key === "End") {
+        e.preventDefault();
+        const { line } = getLineCol(text, pos);
+        const lines = text.split("\n");
+        let lineStart = 0;
+        for (let i = 0; i < line; i++) lineStart += lines[i].length + 1;
+        const lineEnd = lineStart + lines[line].length;
+        if (e.shiftKey) {
+          if (selectionStartRef.current === null) selectionStartRef.current = pos;
+          cursorPosRef.current = lineEnd;
+        } else {
+          cursorPosRef.current = lineEnd;
+          selectionStartRef.current = null;
+        }
       } else if (e.key === "Enter") {
         e.preventDefault();
-        const pos = cursorPosRef.current;
-        setTextValue((prev) => {
-          const n = prev.slice(0, pos) + "\n" + prev.slice(pos);
-          textValueRef.current = n;
+        let newText: string;
+        if (hasSelection) {
+          const start = Math.min(selectionStartRef.current!, pos);
+          const end = Math.max(selectionStartRef.current!, pos);
+          newText = text.slice(0, start) + "\n" + text.slice(end);
+          cursorPosRef.current = start + 1;
+        } else {
+          newText = text.slice(0, pos) + "\n" + text.slice(pos);
           cursorPosRef.current = pos + 1;
-          return n;
-        });
+        }
+        setTextValue(newText);
+        textValueRef.current = newText;
+        selectionStartRef.current = null;
       } else if (e.key === "Backspace") {
         e.preventDefault();
-        const pos = cursorPosRef.current;
-        if (pos === 0) return;
-        setTextValue((prev) => {
-          const n = prev.slice(0, pos - 1) + prev.slice(pos);
-          textValueRef.current = n;
+        let newText: string;
+        if (hasSelection) {
+          const start = Math.min(selectionStartRef.current!, pos);
+          const end = Math.max(selectionStartRef.current!, pos);
+          newText = text.slice(0, start) + text.slice(end);
+          cursorPosRef.current = start;
+        } else {
+          if (pos === 0) return;
+          newText = text.slice(0, pos - 1) + text.slice(pos);
           cursorPosRef.current = pos - 1;
-          return n;
-        });
-      } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        }
+        setTextValue(newText);
+        textValueRef.current = newText;
+        selectionStartRef.current = null;
+      } else if (e.key === "Delete") {
         e.preventDefault();
-        const pos = cursorPosRef.current;
-        setTextValue((prev) => {
-          const n = prev.slice(0, pos) + e.key + prev.slice(pos);
-          textValueRef.current = n;
+        let newText: string;
+        if (hasSelection) {
+          const start = Math.min(selectionStartRef.current!, pos);
+          const end = Math.max(selectionStartRef.current!, pos);
+          newText = text.slice(0, start) + text.slice(end);
+          cursorPosRef.current = start;
+        } else {
+          if (pos >= text.length) return;
+          newText = text.slice(0, pos) + text.slice(pos + 1);
+        }
+        setTextValue(newText);
+        textValueRef.current = newText;
+        selectionStartRef.current = null;
+      } else if (e.key.length === 1 && !mod && !e.altKey) {
+        e.preventDefault();
+        let newText: string;
+        if (hasSelection) {
+          const start = Math.min(selectionStartRef.current!, pos);
+          const end = Math.max(selectionStartRef.current!, pos);
+          newText = text.slice(0, start) + e.key + text.slice(end);
+          cursorPosRef.current = start + 1;
+        } else {
+          newText = text.slice(0, pos) + e.key + text.slice(pos);
           cursorPosRef.current = pos + 1;
-          return n;
-        });
+        }
+        setTextValue(newText);
+        textValueRef.current = newText;
+        selectionStartRef.current = null;
       }
     };
+    const onCopy = (e: ClipboardEvent) => {
+      const curPos = cursorPosRef.current;
+      const selStart = selectionStartRef.current;
+      if (selStart === null || selStart === curPos) return;
+      e.preventDefault();
+      const start = Math.min(selStart, curPos);
+      const end = Math.max(selStart, curPos);
+      e.clipboardData?.setData("text/plain", textValueRef.current.slice(start, end));
+    };
+
+    const onCut = (e: ClipboardEvent) => {
+      const curPos = cursorPosRef.current;
+      const selStart = selectionStartRef.current;
+      if (selStart === null || selStart === curPos) return;
+      e.preventDefault();
+      const start = Math.min(selStart, curPos);
+      const end = Math.max(selStart, curPos);
+      e.clipboardData?.setData("text/plain", textValueRef.current.slice(start, end));
+      const newText = textValueRef.current.slice(0, start) + textValueRef.current.slice(end);
+      setTextValue(newText);
+      textValueRef.current = newText;
+      cursorPosRef.current = start;
+      selectionStartRef.current = null;
+    };
+
+    const onPaste = (e: ClipboardEvent) => {
+      e.preventDefault();
+      const pastedText = e.clipboardData?.getData("text/plain") ?? "";
+      if (!pastedText) return;
+      const curPos = cursorPosRef.current;
+      const selStart = selectionStartRef.current;
+      const hasSelection = selStart !== null && selStart !== curPos;
+      let newText: string;
+      if (hasSelection) {
+        const start = Math.min(selStart!, curPos);
+        const end = Math.max(selStart!, curPos);
+        newText = textValueRef.current.slice(0, start) + pastedText + textValueRef.current.slice(end);
+        cursorPosRef.current = start + pastedText.length;
+      } else {
+        newText = textValueRef.current.slice(0, curPos) + pastedText + textValueRef.current.slice(curPos);
+        cursorPosRef.current = curPos + pastedText.length;
+      }
+      setTextValue(newText);
+      textValueRef.current = newText;
+      selectionStartRef.current = null;
+    };
+
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("copy", onCopy);
+    window.addEventListener("cut", onCut);
+    window.addEventListener("paste", onPaste);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("copy", onCopy);
+      window.removeEventListener("cut", onCut);
+      window.removeEventListener("paste", onPaste);
+    };
   }, [textInput, onElementComplete]);
 
   // ── Window-level pan tracking ─────────────────────────────────────────────────
@@ -1635,15 +1821,18 @@ export default function WhiteboardCanvas({
         const canvas = canvasRef.current;
         const ctx = canvas?.getContext("2d");
         if (ti && ctx) {
-          ctx.font = "28px sans-serif";
+          const fs = fontSizeRef.current;
+          ctx.font = `${fs}px sans-serif`;
           const tv = textValueRef.current;
           const lines = tv.split("\n");
-          const lineH = 28 * 1.3;
-          const lineIdx = Math.max(0, Math.min(lines.length - 1, Math.floor((pt.y - ti.worldY + 28) / lineH)));
+          const lineH = fs * 1.3;
+          const lineIdx = Math.max(0, Math.min(lines.length - 1, Math.floor((pt.y - ti.worldY + fs) / lineH)));
           const charInLine = findCharInLine(ctx, lines[lineIdx], pt.x - ti.worldX);
           let absPos = 0;
           for (let i = 0; i < lineIdx; i++) absPos += lines[i].length + 1;
           cursorPosRef.current = absPos + charInLine;
+          selectionStartRef.current = null;
+          textDragRef.current = true;
         }
         return;
       }
@@ -1685,6 +1874,31 @@ export default function WhiteboardCanvas({
       }
       mousePosRef.current = pt;
 
+      // Text selection drag
+      if (textDragRef.current && textActiveRef.current) {
+        const ti = textInputPosRef.current;
+        const canvas = canvasRef.current;
+        const ctx = canvas?.getContext("2d");
+        if (ti && ctx) {
+          const fs = fontSizeRef.current;
+          ctx.font = `${fs}px sans-serif`;
+          const tv = textValueRef.current;
+          const lines = tv.split("\n");
+          const lineH = fs * 1.3;
+          const lineIdx = Math.max(0, Math.min(lines.length - 1, Math.floor((pt.y - ti.worldY + fs) / lineH)));
+          const charInLine = findCharInLine(ctx, lines[lineIdx], pt.x - ti.worldX);
+          let absPos = 0;
+          for (let i = 0; i < lineIdx; i++) absPos += lines[i].length + 1;
+          const newPos = absPos + charInLine;
+
+          if (selectionStartRef.current === null) {
+            selectionStartRef.current = cursorPosRef.current;
+          }
+          cursorPosRef.current = newPos;
+        }
+        return;
+      }
+
       // Handle drag (resize/rotate)
       if (handleDragRef.current) {
         const hd = handleDragRef.current;
@@ -1699,8 +1913,7 @@ export default function WhiteboardCanvas({
             angle = Math.round(angle / step) * step;
           }
           const updated = rotateCoords(orig, angle);
-          onErase([orig.id]);
-          onElementComplete(updated);
+          onMoveElements([updated]);
           hd.snapshot = updated;
           return;
         } else if (hd.type === "resize") {
@@ -1720,8 +1933,7 @@ export default function WhiteboardCanvas({
             else if (handle === "sw") { nx = b.x + b.w - nw; }
           }
           const updated = scaleElement(snap, b, { x: nx, y: ny, w: nw, h: nh });
-          onErase([snap.id]);
-          onElementComplete(updated);
+          onMoveElements([updated]);
           hd.snapshot = updated;
           return;
         }
@@ -1789,12 +2001,15 @@ export default function WhiteboardCanvas({
         if (now - lastSocketSendRef.current > 33) { onPreviewUpdate({ type: t, x1: startX, y1: startY, x2: ex, y2: ey, color: c, width: w }); lastSocketSendRef.current = now; }
       }
     },
-    [toCanvas, onCursorMove, onPreviewUpdate, onErase, onElementComplete]
+    [toCanvas, onCursorMove, onPreviewUpdate, onErase, onElementComplete, onMoveElements]
   );
 
   const handleMouseUp = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       if (isPanningRef.current) return;
+
+      // End text selection drag
+      textDragRef.current = false;
 
       // Commit resize/rotate handle drag — record one undo entry
       if (handleDragRef.current) {
@@ -1815,8 +2030,7 @@ export default function WhiteboardCanvas({
             const movedIds = ds.elementSnapshots.map((snap) => snap.id);
             const movedElements = ds.elementSnapshots.map((snap) => translateElement(snap, dx, dy));
             pushUndo({ added: movedElements, removed: ds.elementSnapshots });
-            onErase(movedIds);
-            for (const el of movedElements) onElementComplete(el);
+            onMoveElements(movedElements);
             setSelectedIds(movedIds);
             selectedIdsRef.current = movedIds;
           }
@@ -1921,7 +2135,7 @@ export default function WhiteboardCanvas({
         onElementComplete(el);
       }
     },
-    [toCanvas, onElementComplete, onPreviewUpdate, onErase, pushUndo]
+    [toCanvas, onElementComplete, onPreviewUpdate, onErase, onMoveElements, pushUndo]
   );
 
   const handleMouseLeave = useCallback(() => {
@@ -2107,6 +2321,7 @@ export default function WhiteboardCanvas({
       </div>
 
       {/* ── Left panel: colors + thickness ─────────────────────────────────────── */}
+      {tool !== "eraser" && tool !== "select" && tool !== "laser" && (
       <div className="absolute left-3 top-1/2 -translate-y-1/2 z-20 flex flex-col items-center gap-2 bg-white rounded-xl shadow-lg border border-gray-200 px-2 py-3">
         {STROKE_WIDTHS.map((w, i) => (
           <button
@@ -2170,6 +2385,7 @@ export default function WhiteboardCanvas({
           </>
         )}
       </div>
+      )}
 
       {/* ── Zoom controls ──────────────────────────────────────────────────────── */}
       <div className="absolute bottom-3 right-3 z-20 flex items-center gap-1 bg-white rounded-xl shadow-lg border border-gray-200 px-2 py-1.5">

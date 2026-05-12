@@ -57,6 +57,14 @@ export default function Whiteboard({ roomId }: WhiteboardProps) {
       setElements((prev) => prev.filter((el) => !set.has(el.id)));
     });
 
+    // Remote moved elements in-place
+    socket.on("draw:move", (updates: { id: string; element: DrawElement }[]) => {
+      setElements((prev) => {
+        const map = new Map(updates.map(({ id, element }) => [id, element]));
+        return prev.map((el) => map.get(el.id) ?? el);
+      });
+    });
+
     // Remote is drawing (preview)
     socket.on("draw:preview", (data: RemotePreview) => {
       setRemotePreview(data ?? null);
@@ -114,6 +122,15 @@ export default function Whiteboard({ roomId }: WhiteboardProps) {
     socketRef.current?.emit("draw:erase", { ids });
   }, []);
 
+  const handleMoveElements = useCallback((movedElements: DrawElement[]) => {
+    const updates = movedElements.map((el) => ({ id: el.id, element: el }));
+    setElements((prev) => {
+      const map = new Map(updates.map(({ id, element }) => [id, element]));
+      return prev.map((el) => map.get(el.id) ?? el);
+    });
+    socketRef.current?.emit("draw:move", updates);
+  }, []);
+
   const handleClear = useCallback(() => {
     setElements([]);
     socketRef.current?.emit("draw:clear");
@@ -139,6 +156,7 @@ export default function Whiteboard({ roomId }: WhiteboardProps) {
           onErase={handleErase}
           onClear={handleClear}
           onReorder={handleReorder}
+          onMoveElements={handleMoveElements}
         />
       </div>
     </div>

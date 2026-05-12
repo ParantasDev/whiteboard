@@ -87,8 +87,8 @@ export default function Whiteboard({ roomId }: WhiteboardProps) {
     socketRef.current?.emit("draw:preview", preview);
   }, []);
 
-  const handleCursorMove = useCallback((x: number, y: number) => {
-    socketRef.current?.emit("cursor:move", { x, y });
+  const handleCursorMove = useCallback((x: number, y: number, isLaser?: boolean) => {
+    socketRef.current?.emit("cursor:move", { x, y, isLaser });
   }, []);
 
   const handleUndo = useCallback(

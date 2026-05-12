@@ -36,6 +36,8 @@ const PLAYER_COLORS = ["#6366f1", "#f59e0b"];
 const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 20;
 
+const FONT_SIZES = [14, 20, 28, 40];
+
 const TOOL_LABELS: Record<ToolType, string> = {
   select: "Select",
   pen: "Pen",
@@ -46,18 +48,20 @@ const TOOL_LABELS: Record<ToolType, string> = {
   text: "Text",
   eraser: "Eraser",
   fill: "Fill",
+  laser: "Laser",
 };
 
 const TOOL_TIPS: Record<ToolType, string> = {
   select: "Click · shift+click · drag to select · drag selection to move · right-click for options",
   pen: "Draw freehand",
-  rect: "Click & drag to draw a rectangle",
-  ellipse: "Click & drag to draw an ellipse",
-  line: "Click & drag to draw a line",
-  arrow: "Click & drag to draw an arrow",
+  rect: "Click & drag · Shift for square",
+  ellipse: "Click & drag · Shift for circle",
+  line: "Click & drag · Shift to snap 45°",
+  arrow: "Click & drag · Shift to snap 45°",
   text: "Click anywhere to place text, then press Enter",
   eraser: "Click & drag to erase",
   fill: "Click a shape to fill it with the selected color",
+  laser: "Laser pointer — traces fade after 2 seconds",
 };
 
 const TOOL_ICONS: Record<ToolType, React.ReactNode> = {
@@ -109,6 +113,19 @@ const TOOL_ICONS: Record<ToolType, React.ReactNode> = {
   fill: (
     <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" className="w-5 h-5">
       <path d="M12 2C12 2 5 10.5 5 15a7 7 0 0 0 14 0C19 10.5 12 2 12 2z" />
+    </svg>
+  ),
+  laser: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+      <circle cx="12" cy="12" r="2" fill="currentColor" stroke="none" />
+      <line x1="12" y1="2" x2="12" y2="6" />
+      <line x1="12" y1="18" x2="12" y2="22" />
+      <line x1="2" y1="12" x2="6" y2="12" />
+      <line x1="18" y1="12" x2="22" y2="12" />
+      <line x1="4.93" y1="4.93" x2="7.76" y2="7.76" />
+      <line x1="16.24" y1="16.24" x2="19.07" y2="19.07" />
+      <line x1="4.93" y1="19.07" x2="7.76" y2="16.24" />
+      <line x1="16.24" y1="7.76" x2="19.07" y2="4.93" />
     </svg>
   ),
 };
@@ -291,23 +308,33 @@ function renderElement(ctx: CanvasRenderingContext2D, el: DrawElement) {
       }
       drawSmoothedStroke(ctx, el.points, el.color, el.width);
       break;
-    case "rect":
+    case "rect": {
+      const rot = el.rotation ?? 0;
+      if (rot !== 0) {
+        ctx.translate(el.x + el.w / 2, el.y + el.h / 2);
+        ctx.rotate(rot);
+        ctx.translate(-(el.w / 2), -(el.h / 2));
+      } else {
+        ctx.translate(el.x, el.y);
+      }
       ctx.strokeStyle = el.color;
       ctx.lineWidth = el.width;
       if (el.fillColor) {
         ctx.fillStyle = el.fillColor;
-        ctx.fillRect(el.x, el.y, el.w, el.h);
+        ctx.fillRect(0, 0, el.w, el.h);
       } else if (el.filled) {
         ctx.fillStyle = el.color + "33";
-        ctx.fillRect(el.x, el.y, el.w, el.h);
+        ctx.fillRect(0, 0, el.w, el.h);
       }
-      ctx.strokeRect(el.x, el.y, el.w, el.h);
+      ctx.strokeRect(0, 0, el.w, el.h);
       break;
-    case "ellipse":
+    }
+    case "ellipse": {
+      const rot = el.rotation ?? 0;
       ctx.strokeStyle = el.color;
       ctx.lineWidth = el.width;
       ctx.beginPath();
-      ctx.ellipse(el.cx, el.cy, el.rx, el.ry, 0, 0, Math.PI * 2);
+      ctx.ellipse(el.cx, el.cy, el.rx, el.ry, rot, 0, Math.PI * 2);
       if (el.fillColor) {
         ctx.fillStyle = el.fillColor;
         ctx.fill();
@@ -317,6 +344,7 @@ function renderElement(ctx: CanvasRenderingContext2D, el: DrawElement) {
       }
       ctx.stroke();
       break;
+    }
     case "line":
       ctx.strokeStyle = el.color;
       ctx.lineWidth = el.width;
@@ -337,26 +365,46 @@ function renderElement(ctx: CanvasRenderingContext2D, el: DrawElement) {
       drawArrowHead(ctx, el.x1, el.y1, el.x2, el.y2, el.width, el.color);
       break;
     }
-    case "text":
+    case "text": {
+      const rot = el.rotation ?? 0;
+      const lines = el.text.split("\n");
+      const lineH = el.fontSize * 1.3;
+      const approxW = Math.max(...lines.map((l) => l.length)) * el.fontSize * 0.55 + 16;
+      const totalH = lines.length * lineH;
+      if (rot !== 0) {
+        const cx = el.x + approxW / 2;
+        const cy = el.y - el.fontSize + totalH / 2;
+        ctx.translate(cx, cy);
+        ctx.rotate(rot);
+        ctx.translate(-cx, -cy);
+      }
       ctx.fillStyle = el.color;
       ctx.font = `${el.fontSize}px sans-serif`;
-      el.text.split("\n").forEach((line, i) => {
-        ctx.fillText(line, el.x, el.y + i * el.fontSize * 1.3);
+      lines.forEach((line, i) => {
+        ctx.fillText(line, el.x, el.y + i * lineH);
       });
       break;
+    }
     case "image": {
+      const rot = el.rotation ?? 0;
+      if (rot !== 0) {
+        ctx.translate(el.x + el.w / 2, el.y + el.h / 2);
+        ctx.rotate(rot);
+        ctx.translate(-el.w / 2, -el.h / 2);
+      } else {
+        ctx.translate(el.x, el.y);
+      }
       if (el.fills && el.fills.length > 0) {
         const filled = getFilledImageCanvas(el);
         if (filled) {
-          ctx.drawImage(filled, el.x, el.y, el.w, el.h);
+          ctx.drawImage(filled, 0, 0, el.w, el.h);
         } else {
-          // Still loading — draw unfilled while computing
           const img = loadImage(el.url);
-          if (img.complete && img.naturalWidth > 0) ctx.drawImage(img, el.x, el.y, el.w, el.h);
+          if (img.complete && img.naturalWidth > 0) ctx.drawImage(img, 0, 0, el.w, el.h);
         }
       } else {
         const img = loadImage(el.url);
-        if (img.complete && img.naturalWidth > 0) ctx.drawImage(img, el.x, el.y, el.w, el.h);
+        if (img.complete && img.naturalWidth > 0) ctx.drawImage(img, 0, 0, el.w, el.h);
       }
       break;
     }
@@ -460,6 +508,16 @@ function pointInPath(points: Point[], px: number, py: number): boolean {
 
 // ── Select tool helpers ───────────────────────────────────────────────────────
 
+function rotatedBounds(cx: number, cy: number, w: number, h: number, rot: number) {
+  const hw = w / 2, hh = h / 2;
+  const corners = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
+  const cos = Math.cos(rot), sin = Math.sin(rot);
+  const rxs = corners.map(([x, y]) => cx + x * cos - y * sin);
+  const rys = corners.map(([x, y]) => cy + x * sin + y * cos);
+  const minX = Math.min(...rxs), minY = Math.min(...rys);
+  return { x: minX, y: minY, w: Math.max(...rxs) - minX, h: Math.max(...rys) - minY };
+}
+
 function getBounds(el: DrawElement): { x: number; y: number; w: number; h: number } {
   switch (el.type) {
     case "stroke": {
@@ -468,8 +526,11 @@ function getBounds(el: DrawElement): { x: number; y: number; w: number; h: numbe
       const minX = Math.min(...xs), minY = Math.min(...ys);
       return { x: minX, y: minY, w: Math.max(...xs) - minX, h: Math.max(...ys) - minY };
     }
-    case "rect":
+    case "rect": {
+      const rot = el.rotation ?? 0;
+      if (rot !== 0) return rotatedBounds(el.x + el.w / 2, el.y + el.h / 2, el.w, el.h, rot);
       return { x: el.x, y: el.y, w: el.w, h: el.h };
+    }
     case "ellipse":
       return { x: el.cx - el.rx, y: el.cy - el.ry, w: el.rx * 2, h: el.ry * 2 };
     case "line":
@@ -482,8 +543,11 @@ function getBounds(el: DrawElement): { x: number; y: number; w: number; h: numbe
       const approxW = Math.max(...lines.map((l) => l.length)) * el.fontSize * 0.55 + 16;
       return { x: el.x, y: el.y - el.fontSize, w: approxW, h: lines.length * el.fontSize * 1.3 };
     }
-    case "image":
+    case "image": {
+      const rot = el.rotation ?? 0;
+      if (rot !== 0) return rotatedBounds(el.x + el.w / 2, el.y + el.h / 2, el.w, el.h, rot);
       return { x: el.x, y: el.y, w: el.w, h: el.h };
+    }
   }
 }
 
@@ -537,7 +601,7 @@ interface WhiteboardCanvasProps {
   playerIndex: number;
   onElementComplete: (el: DrawElement) => void;
   onPreviewUpdate: (preview: RemotePreview | null) => void;
-  onCursorMove: (x: number, y: number) => void;
+  onCursorMove: (x: number, y: number, isLaser?: boolean) => void;
   onUndo: (playerIndex: number) => void;
   onErase: (ids: string[]) => void;
   onClear: () => void;
@@ -583,6 +647,7 @@ export default function WhiteboardCanvas({
   const [color, setColor] = useState(COLORS[0]);
   const [strokeWidth, setStrokeWidth] = useState(STROKE_WIDTHS[1]);
   const [filled, setFilled] = useState(false);
+  const [fontSize, setFontSize] = useState(28);
 
   // Text input (canvas-based)
   const [textInput, setTextInput] = useState<TextInputState | null>(null);
@@ -625,8 +690,26 @@ export default function WhiteboardCanvas({
   // Context menu: holds the IDs to act on (either the selection or a single right-clicked element)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; elementIds: string[] } | null>(null);
 
-  // Undo history: each entry records what was added and removed in one user action
+  // Undo/redo history
   const undoStackRef = useRef<Array<{ added: DrawElement[]; removed: DrawElement[] }>>([]);
+  const redoStackRef = useRef<Array<{ added: DrawElement[]; removed: DrawElement[] }>>([]);
+
+  // Clipboard
+  const clipboardRef = useRef<DrawElement[]>([]);
+
+  // Laser pointer: timestamped trail points
+  const laserTrailRef = useRef<Array<{ x: number; y: number; t: number }>>([]);
+
+  // Resize/rotation handle drag state
+  const handleDragRef = useRef<{
+    type: "resize" | "rotate";
+    elementId: string;
+    originalSnapshot: DrawElement;
+    snapshot: DrawElement; // updated live during drag
+    handle: string; // "nw"|"ne"|"sw"|"se"|"rot"
+    startX: number;
+    startY: number;
+  } | null>(null);
 
   // Coloring pages
   const [coloringPages, setColoringPages] = useState<ColoringPage[]>([]);
@@ -637,6 +720,7 @@ export default function WhiteboardCanvas({
   const colorRef = useRef(color);
   const strokeWidthRef = useRef(strokeWidth);
   const filledRef = useRef(filled);
+  const fontSizeRef = useRef(fontSize);
   const playerIndexRef = useRef(playerIndex);
   const elementsRef = useRef(elements);
 
@@ -644,6 +728,7 @@ export default function WhiteboardCanvas({
   useEffect(() => { colorRef.current = color; }, [color]);
   useEffect(() => { strokeWidthRef.current = strokeWidth; }, [strokeWidth]);
   useEffect(() => { filledRef.current = filled; }, [filled]);
+  useEffect(() => { fontSizeRef.current = fontSize; }, [fontSize]);
   useEffect(() => { playerIndexRef.current = playerIndex; }, [playerIndex]);
   useEffect(() => { elementsRef.current = elements; }, [elements]);
   useEffect(() => { textValueRef.current = textValue; }, [textValue]);
@@ -793,17 +878,18 @@ export default function WhiteboardCanvas({
       const { worldX, worldY } = textInputPosRef.current;
       const tv = textValueRef.current;
       const lines = tv.split("\n");
-      const lineH = 28 * 1.3;
+      const fs = fontSizeRef.current;
+      const lineH = fs * 1.3;
       const showCursor = Math.floor(Date.now() / 530) % 2 === 0;
       ctx.save();
       ctx.fillStyle = colorRef.current;
-      ctx.font = "28px sans-serif";
+      ctx.font = `${fs}px sans-serif`;
       lines.forEach((line, i) => ctx.fillText(line, worldX, worldY + i * lineH));
       if (showCursor) {
         const { line: curLine, col: curCol } = getLineCol(tv, cursorPosRef.current);
         const cursorX = worldX + ctx.measureText(lines[curLine].slice(0, curCol)).width;
         const cursorY = worldY + curLine * lineH;
-        ctx.fillRect(cursorX, cursorY - 24, 2 / zoom, 30);
+        ctx.fillRect(cursorX, cursorY - fs * 0.85, 2 / zoom, fs * 1.1);
       }
       const underW = ctx.measureText((lines[0] || " ") + "  ").width;
       ctx.strokeStyle = colorRef.current;
@@ -889,21 +975,109 @@ export default function WhiteboardCanvas({
       const rc = PLAYER_COLORS[1 - playerIndexRef.current] ?? PLAYER_COLORS[1];
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.save();
-      ctx.fillStyle = rc;
-      ctx.strokeStyle = "#ffffff";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(sx, sy);
-      ctx.lineTo(sx + 10, sy + 14);
-      ctx.lineTo(sx + 6, sy + 14);
-      ctx.lineTo(sx + 8.5, sy + 20);
-      ctx.lineTo(sx + 6.5, sy + 20.5);
-      ctx.lineTo(sx + 4, sy + 14.5);
-      ctx.lineTo(sx, sy + 17);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
+      if (remoteCursor.isLaser) {
+        ctx.beginPath();
+        ctx.arc(sx, sy, 8, 0, Math.PI * 2);
+        ctx.fillStyle = "#ef4444cc";
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(sx, sy, 4, 0, Math.PI * 2);
+        ctx.fillStyle = "#ffffff";
+        ctx.fill();
+      } else {
+        ctx.fillStyle = rc;
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(sx + 10, sy + 14);
+        ctx.lineTo(sx + 6, sy + 14);
+        ctx.lineTo(sx + 8.5, sy + 20);
+        ctx.lineTo(sx + 6.5, sy + 20.5);
+        ctx.lineTo(sx + 4, sy + 14.5);
+        ctx.lineTo(sx, sy + 17);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
       ctx.restore();
+    }
+
+    // Local laser trail (world space)
+    const now = Date.now();
+    const trail = laserTrailRef.current.filter((p) => now - p.t < 2000);
+    laserTrailRef.current = trail;
+    if (trail.length > 1 && toolRef.current === "laser") {
+      ctx.setTransform(zoom, 0, 0, zoom, panX, panY);
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      for (let i = 1; i < trail.length; i++) {
+        const age = (now - trail[i].t) / 2000;
+        ctx.globalAlpha = (1 - age) * 0.85;
+        ctx.strokeStyle = "#ef4444";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(trail[i - 1].x, trail[i - 1].y);
+        ctx.lineTo(trail[i].x, trail[i].y);
+        ctx.stroke();
+      }
+      // Dot at tip
+      if (trail.length > 0) {
+        const tip = trail[trail.length - 1];
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = "#ef4444";
+        ctx.beginPath();
+        ctx.arc(tip.x, tip.y, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(tip.x, tip.y, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // Resize + rotation handles for single selected element (select tool)
+    if (selIds.length === 1 && toolRef.current === "select" && !ds?.active) {
+      const el = elementsRef.current.find((e) => e.id === selIds[0]);
+      if (el && (el.type === "rect" || el.type === "image" || el.type === "ellipse")) {
+        ctx.setTransform(zoom, 0, 0, zoom, panX, panY);
+        const b = getBounds(el);
+        const mx = b.x + b.w / 2;
+        const my = b.y + b.h / 2;
+        const hw = b.w / 2 + 6, hh = b.h / 2 + 6;
+        const corners = [
+          { x: mx - hw, y: my - hh, handle: "nw" },
+          { x: mx + hw, y: my - hh, handle: "ne" },
+          { x: mx + hw, y: my + hh, handle: "se" },
+          { x: mx - hw, y: my + hh, handle: "sw" },
+        ];
+        const HR = 6 / zoom;
+        ctx.save();
+        corners.forEach(({ x, y }) => {
+          ctx.fillStyle = "#ffffff";
+          ctx.strokeStyle = "#6366f1";
+          ctx.lineWidth = 2 / zoom;
+          ctx.beginPath();
+          ctx.rect(x - HR, y - HR, HR * 2, HR * 2);
+          ctx.fill(); ctx.stroke();
+        });
+        // Rotation handle
+        const rotY = my - hh - 24 / zoom;
+        ctx.setLineDash([3 / zoom, 3 / zoom]);
+        ctx.strokeStyle = "#6366f180";
+        ctx.lineWidth = 1.5 / zoom;
+        ctx.beginPath(); ctx.moveTo(mx, my - hh - 6 / zoom); ctx.lineTo(mx, rotY); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#6366f1";
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2 / zoom;
+        ctx.beginPath();
+        ctx.arc(mx, rotY, HR, 0, Math.PI * 2);
+        ctx.fill(); ctx.stroke();
+        ctx.restore();
+      }
     }
   }, [remotePreview, remoteCursor]);
 
@@ -992,9 +1166,9 @@ export default function WhiteboardCanvas({
           id: uuidv4(), type: "text",
           x: ti.worldX, y: ti.worldY,
           text: tv, color: colorRef.current,
-          fontSize: 28, playerIndex: playerIndexRef.current,
+          fontSize: fontSizeRef.current, playerIndex: playerIndexRef.current,
         } as TextElement;
-        undoStackRef.current.push({ added: [el], removed: [] });
+        pushUndo({ added: [el], removed: [] });
         onElementComplete(el);
       }
       setTextInput(null);
@@ -1071,29 +1245,77 @@ export default function WhiteboardCanvas({
     return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
   }, []);
 
-  // ── Undo ─────────────────────────────────────────────────────────────────────
+  // ── Undo / Redo ───────────────────────────────────────────────────────────────
 
   const handleLocalUndo = useCallback(() => {
     const action = undoStackRef.current.pop();
     if (!action) return;
+    redoStackRef.current.push(action);
     if (action.added.length > 0) onErase(action.added.map((el) => el.id));
     for (const el of action.removed) onElementComplete(el);
   }, [onErase, onElementComplete]);
+
+  const handleLocalRedo = useCallback(() => {
+    const action = redoStackRef.current.pop();
+    if (!action) return;
+    undoStackRef.current.push(action);
+    if (action.removed.length > 0) onErase(action.removed.map((el) => el.id));
+    for (const el of action.added) onElementComplete(el);
+  }, [onErase, onElementComplete]);
+
+  const pushUndo = useCallback((action: { added: DrawElement[]; removed: DrawElement[] }) => {
+    undoStackRef.current.push(action);
+    redoStackRef.current = [];
+  }, []);
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────────────
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (textInput) return;
-      if ((e.metaKey || e.ctrlKey) && e.key === "z") { e.preventDefault(); handleLocalUndo(); }
-      if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key === "z" && !e.shiftKey) { e.preventDefault(); handleLocalUndo(); return; }
+      if (mod && (e.key === "y" || (e.key === "z" && e.shiftKey))) { e.preventDefault(); handleLocalRedo(); return; }
+      if (mod && e.key === "c") {
+        e.preventDefault();
+        if (selectedIdsRef.current.length > 0)
+          clipboardRef.current = elementsRef.current.filter((el) => selectedIdsRef.current.includes(el.id));
+        return;
+      }
+      if (mod && e.key === "v") {
+        e.preventDefault();
+        if (clipboardRef.current.length > 0) {
+          const offsetPasted = clipboardRef.current.map((el) =>
+            translateElement({ ...el, id: uuidv4(), playerIndex: playerIndexRef.current }, 20, 20)
+          );
+          pushUndo({ added: offsetPasted, removed: [] });
+          offsetPasted.forEach((el) => onElementComplete(el));
+          setSelectedIds(offsetPasted.map((el) => el.id));
+          selectedIdsRef.current = offsetPasted.map((el) => el.id);
+        }
+        return;
+      }
+      if (mod && e.key === "d") {
+        e.preventDefault();
+        if (selectedIdsRef.current.length > 0) {
+          const duped = elementsRef.current
+            .filter((el) => selectedIdsRef.current.includes(el.id))
+            .map((el) => translateElement({ ...el, id: uuidv4(), playerIndex: playerIndexRef.current }, 20, 20));
+          pushUndo({ added: duped, removed: [] });
+          duped.forEach((el) => onElementComplete(el));
+          setSelectedIds(duped.map((el) => el.id));
+          selectedIdsRef.current = duped.map((el) => el.id);
+        }
+        return;
+      }
+      if (!mod && !e.altKey) {
         if (e.key === "+" || e.key === "=") { e.preventDefault(); applyZoom(1.25); }
         if (e.key === "-") { e.preventDefault(); applyZoom(1 / 1.25); }
         if (e.key === "0") { e.preventDefault(); resetView(); }
         if ((e.key === "Delete" || e.key === "Backspace") && toolRef.current === "select") {
           if (selectedIdsRef.current.length > 0) {
             const toDelete = elementsRef.current.filter((el) => selectedIdsRef.current.includes(el.id));
-            undoStackRef.current.push({ added: [], removed: toDelete });
+            pushUndo({ added: [], removed: toDelete });
             onErase(selectedIdsRef.current);
             setSelectedIds([]);
             selectedIdsRef.current = [];
@@ -1103,7 +1325,7 @@ export default function WhiteboardCanvas({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [textInput, handleLocalUndo, applyZoom, resetView, onErase]);
+  }, [textInput, handleLocalUndo, handleLocalRedo, applyZoom, resetView, onErase, onElementComplete, pushUndo]);
 
   // ── Close context menu on outside click ──────────────────────────────────────
 
@@ -1133,6 +1355,35 @@ export default function WhiteboardCanvas({
       if (toolRef.current === "select") {
         setContextMenu(null);
         if (e.button !== 0) return;
+
+        // Check resize / rotation handles for single selection
+        if (selectedIdsRef.current.length === 1) {
+          const selEl = elementsRef.current.find((e) => e.id === selectedIdsRef.current[0]);
+          if (selEl && (selEl.type === "rect" || selEl.type === "image" || selEl.type === "ellipse")) {
+            const b = getBounds(selEl);
+            const mx = b.x + b.w / 2, my = b.y + b.h / 2;
+            const hw = b.w / 2 + 6, hh = b.h / 2 + 6;
+            const HR = 10; // hit radius in world units (handle is 6px, plus tolerance)
+            const handles = [
+              { x: mx - hw, y: my - hh, handle: "nw" },
+              { x: mx + hw, y: my - hh, handle: "ne" },
+              { x: mx + hw, y: my + hh, handle: "se" },
+              { x: mx - hw, y: my + hh, handle: "sw" },
+            ];
+            for (const h of handles) {
+              if (Math.hypot(pt.x - h.x, pt.y - h.y) < HR / viewRef.current.zoom) {
+                handleDragRef.current = { type: "resize", elementId: selEl.id, originalSnapshot: selEl, snapshot: selEl, handle: h.handle, startX: pt.x, startY: pt.y };
+                return;
+              }
+            }
+            // Rotation handle
+            const rotY = my - hh - 24 / viewRef.current.zoom;
+            if (Math.hypot(pt.x - mx, pt.y - rotY) < HR / viewRef.current.zoom) {
+              handleDragRef.current = { type: "rotate", elementId: selEl.id, originalSnapshot: selEl, snapshot: selEl, handle: "rot", startX: pt.x, startY: pt.y };
+              return;
+            }
+          }
+        }
 
         const els = elementsRef.current;
         let hit: DrawElement | null = null;
@@ -1170,6 +1421,13 @@ export default function WhiteboardCanvas({
         return;
       }
 
+      // ── Laser tool ────────────────────────────────────────────────────────────
+      if (toolRef.current === "laser") {
+        laserTrailRef.current = [{ x: pt.x, y: pt.y, t: Date.now() }];
+        drawingRef.current = { active: true, startX: pt.x, startY: pt.y, points: [pt] };
+        return;
+      }
+
       // ── Fill tool ─────────────────────────────────────────────────────────────
       if (toolRef.current === "fill") {
         const els = elementsRef.current;
@@ -1178,7 +1436,7 @@ export default function WhiteboardCanvas({
           if (el.type === "rect" || el.type === "ellipse") {
             if (hitTestElement(el, pt.x, pt.y)) {
               const filled = { ...el, fillColor: colorRef.current };
-              undoStackRef.current.push({ added: [filled], removed: [el] });
+              pushUndo({ added: [filled], removed: [el] });
               onErase([el.id]);
               onElementComplete(filled);
               break;
@@ -1186,7 +1444,7 @@ export default function WhiteboardCanvas({
           } else if (el.type === "stroke") {
             if (pointInPath(el.points, pt.x, pt.y)) {
               const filled = { ...el, fillColor: colorRef.current };
-              undoStackRef.current.push({ added: [filled], removed: [el] });
+              pushUndo({ added: [filled], removed: [el] });
               onErase([el.id]);
               onElementComplete(filled);
               break;
@@ -1195,7 +1453,7 @@ export default function WhiteboardCanvas({
             if (hitTestElement(el, pt.x, pt.y)) {
               const newFills = [...(el.fills ?? []), { wx: pt.x, wy: pt.y, color: colorRef.current }];
               const filled = { ...el, fills: newFills };
-              undoStackRef.current.push({ added: [filled], removed: [el] });
+              pushUndo({ added: [filled], removed: [el] });
               onErase([el.id]);
               onElementComplete(filled);
               break;
@@ -1254,11 +1512,66 @@ export default function WhiteboardCanvas({
 
       const pt = toCanvas(e.clientX, e.clientY);
       const now = Date.now();
+      const isLaserTool = toolRef.current === "laser";
       if (now - lastSocketSendRef.current > 33) {
-        onCursorMove(pt.x, pt.y);
+        onCursorMove(pt.x, pt.y, isLaserTool);
         lastSocketSendRef.current = now;
       }
       mousePosRef.current = pt;
+
+      // Handle drag (resize/rotate)
+      if (handleDragRef.current) {
+        const hd = handleDragRef.current;
+        const snap = hd.snapshot;
+        if (hd.type === "rotate") {
+          // Compute angle from element center to mouse
+          const b = getBounds(snap);
+          const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+          const angle = Math.atan2(pt.y - cy, pt.x - cx) + Math.PI / 2;
+          const updated = { ...snap, rotation: angle } as DrawElement;
+          onErase([snap.id]);
+          onElementComplete(updated);
+          // Update snapshot for continuous drag
+          hd.snapshot = updated;
+          return;
+        } else if (hd.type === "resize") {
+          const handle = hd.handle;
+          if (snap.type === "rect") {
+            let { x, y, w, h } = snap;
+            if (handle === "se") { w = Math.max(10, pt.x - x); h = Math.max(10, pt.y - y); }
+            else if (handle === "sw") { w = Math.max(10, (x + w) - pt.x); x = pt.x; h = Math.max(10, pt.y - y); }
+            else if (handle === "ne") { w = Math.max(10, pt.x - x); h = Math.max(10, (y + h) - pt.y); y = pt.y; }
+            else if (handle === "nw") { w = Math.max(10, (x + w) - pt.x); x = pt.x; h = Math.max(10, (y + h) - pt.y); y = pt.y; }
+            const updated = { ...snap, x, y, w, h };
+            onErase([snap.id]);
+            onElementComplete(updated);
+            hd.snapshot = updated;
+          } else if (snap.type === "ellipse") {
+            let { cx, cy, rx, ry } = snap;
+            const bx = cx - rx, by = cy - ry, bw = rx * 2, bh = ry * 2;
+            let nx = bx, ny = by, nw = bw, nh = bh;
+            if (handle === "se") { nw = Math.max(10, pt.x - nx); nh = Math.max(10, pt.y - ny); }
+            else if (handle === "sw") { nw = Math.max(10, (bx + bw) - pt.x); nx = pt.x; nh = Math.max(10, pt.y - ny); }
+            else if (handle === "ne") { nw = Math.max(10, pt.x - nx); nh = Math.max(10, (by + bh) - pt.y); ny = pt.y; }
+            else if (handle === "nw") { nw = Math.max(10, (bx + bw) - pt.x); nx = pt.x; nh = Math.max(10, (by + bh) - pt.y); ny = pt.y; }
+            const updated = { ...snap, cx: nx + nw / 2, cy: ny + nh / 2, rx: nw / 2, ry: nh / 2 };
+            onErase([snap.id]);
+            onElementComplete(updated);
+            hd.snapshot = updated;
+          } else if (snap.type === "image") {
+            let { x, y, w, h } = snap;
+            if (handle === "se") { w = Math.max(10, pt.x - x); h = Math.max(10, pt.y - y); }
+            else if (handle === "sw") { w = Math.max(10, (x + w) - pt.x); x = pt.x; h = Math.max(10, pt.y - y); }
+            else if (handle === "ne") { w = Math.max(10, pt.x - x); h = Math.max(10, (y + h) - pt.y); y = pt.y; }
+            else if (handle === "nw") { w = Math.max(10, (x + w) - pt.x); x = pt.x; h = Math.max(10, (y + h) - pt.y); y = pt.y; }
+            const updated = { ...snap, x, y, w, h };
+            onErase([snap.id]);
+            onElementComplete(updated);
+            hd.snapshot = updated;
+          }
+          return;
+        }
+      }
 
       // Select tool: update drag or marquee
       if (toolRef.current === "select") {
@@ -1272,12 +1585,22 @@ export default function WhiteboardCanvas({
         return;
       }
 
+      // Laser tool: add to trail
+      if (toolRef.current === "laser" && drawingRef.current.active) {
+        laserTrailRef.current.push({ x: pt.x, y: pt.y, t: now });
+        return;
+      }
+
       if (!drawingRef.current.active) return;
       const { startX, startY } = drawingRef.current;
       const t = toolRef.current;
       const c = colorRef.current;
       const w = strokeWidthRef.current;
       const f = filledRef.current;
+
+      // Shift-constrain helpers
+      const dx = pt.x - startX, dy = pt.y - startY;
+      const constrained = e.shiftKey;
 
       if (t === "pen") {
         drawingRef.current.points.push(pt);
@@ -1287,26 +1610,45 @@ export default function WhiteboardCanvas({
         drawingRef.current.points.push(pt);
         eraserRef.current = [...drawingRef.current.points];
       } else if (t === "rect") {
-        const x = Math.min(startX, pt.x), y = Math.min(startY, pt.y);
-        const pw = Math.abs(pt.x - startX), ph = Math.abs(pt.y - startY);
+        let pw = Math.abs(dx), ph = Math.abs(dy);
+        if (constrained) { const s = Math.max(pw, ph); pw = s; ph = s; }
+        const x = startX + (dx < 0 ? -pw : 0);
+        const y = startY + (dy < 0 ? -ph : 0);
         previewRef.current = { type: "rect", x, y, w: pw, h: ph, color: c, width: w, filled: f };
         if (now - lastSocketSendRef.current > 33) { onPreviewUpdate({ type: "rect", x, y, w: pw, h: ph, color: c, width: w }); lastSocketSendRef.current = now; }
       } else if (t === "ellipse") {
-        const cx = (startX + pt.x) / 2, cy = (startY + pt.y) / 2;
-        const rx = Math.abs(pt.x - startX) / 2, ry = Math.abs(pt.y - startY) / 2;
+        let rx = Math.abs(dx) / 2, ry = Math.abs(dy) / 2;
+        if (constrained) { const r = Math.max(rx, ry); rx = r; ry = r; }
+        const cx = startX + dx / 2, cy = startY + dy / 2;
         previewRef.current = { type: "ellipse", cx, cy, rx, ry, color: c, width: w, filled: f };
         if (now - lastSocketSendRef.current > 33) { onPreviewUpdate({ type: "ellipse", cx, cy, rx, ry, color: c, width: w }); lastSocketSendRef.current = now; }
       } else if (t === "line" || t === "arrow") {
-        previewRef.current = { type: t, x1: startX, y1: startY, x2: pt.x, y2: pt.y, color: c, width: w };
-        if (now - lastSocketSendRef.current > 33) { onPreviewUpdate({ type: t, x1: startX, y1: startY, x2: pt.x, y2: pt.y, color: c, width: w }); lastSocketSendRef.current = now; }
+        let ex = pt.x, ey = pt.y;
+        if (constrained) {
+          const angle = Math.atan2(dy, dx);
+          const snapped = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+          const dist = Math.hypot(dx, dy);
+          ex = startX + dist * Math.cos(snapped);
+          ey = startY + dist * Math.sin(snapped);
+        }
+        previewRef.current = { type: t, x1: startX, y1: startY, x2: ex, y2: ey, color: c, width: w };
+        if (now - lastSocketSendRef.current > 33) { onPreviewUpdate({ type: t, x1: startX, y1: startY, x2: ex, y2: ey, color: c, width: w }); lastSocketSendRef.current = now; }
       }
     },
-    [toCanvas, onCursorMove, onPreviewUpdate]
+    [toCanvas, onCursorMove, onPreviewUpdate, onErase, onElementComplete]
   );
 
   const handleMouseUp = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       if (isPanningRef.current) return;
+
+      // Commit resize/rotate handle drag — record one undo entry
+      if (handleDragRef.current) {
+        const hd = handleDragRef.current;
+        pushUndo({ added: [hd.snapshot], removed: [hd.originalSnapshot] });
+        handleDragRef.current = null;
+        return;
+      }
 
       // Select tool: commit drag or marquee
       if (toolRef.current === "select") {
@@ -1318,7 +1660,7 @@ export default function WhiteboardCanvas({
           if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
             const movedIds = ds.elementSnapshots.map((snap) => snap.id);
             const movedElements = ds.elementSnapshots.map((snap) => translateElement(snap, dx, dy));
-            undoStackRef.current.push({ added: movedElements, removed: ds.elementSnapshots });
+            pushUndo({ added: movedElements, removed: ds.elementSnapshots });
             onErase(movedIds);
             for (const el of movedElements) onElementComplete(el);
             setSelectedIds(movedIds);
@@ -1346,6 +1688,12 @@ export default function WhiteboardCanvas({
         return;
       }
 
+      // Laser: just stop drawing (trail fades naturally)
+      if (toolRef.current === "laser") {
+        drawingRef.current.active = false;
+        return;
+      }
+
       if (!drawingRef.current.active) return;
       drawingRef.current.active = false;
       previewRef.current = null;
@@ -1358,11 +1706,13 @@ export default function WhiteboardCanvas({
       const w = strokeWidthRef.current;
       const f = filledRef.current;
       const pi = playerIndexRef.current;
+      const shift = e.shiftKey;
+      const dx = pt.x - startX, dy = pt.y - startY;
 
       if (t === "pen") {
         if (points.length < 2) return;
         const el = { id: uuidv4(), type: "stroke", points, color: c, width: w, playerIndex: pi } as StrokeElement;
-        undoStackRef.current.push({ added: [el], removed: [] });
+        pushUndo({ added: [el], removed: [] });
         onElementComplete(el);
       } else if (t === "eraser") {
         const ep = [...eraserRef.current];
@@ -1370,39 +1720,59 @@ export default function WhiteboardCanvas({
         if (ep.length === 0) return;
         const hits = elementsRef.current.filter((el) => elementHitByEraser(el, ep, w * 5));
         if (hits.length > 0) {
-          undoStackRef.current.push({ added: [], removed: hits });
+          pushUndo({ added: [], removed: hits });
           onErase(hits.map((el) => el.id));
         }
       } else if (t === "rect") {
-        const x = Math.min(startX, pt.x), y = Math.min(startY, pt.y);
-        const rw = Math.abs(pt.x - startX), rh = Math.abs(pt.y - startY);
+        let rw = Math.abs(dx), rh = Math.abs(dy);
+        if (shift) { const s = Math.max(rw, rh); rw = s; rh = s; }
         if (rw < 5 || rh < 5) return;
-        const el = { id: uuidv4(), type: "rect", x, y, w: rw, h: rh, color: c, width: w, filled: f, playerIndex: pi } as RectElement;
-        undoStackRef.current.push({ added: [el], removed: [] });
+        const rx = startX + (dx < 0 ? -rw : 0);
+        const ry = startY + (dy < 0 ? -rh : 0);
+        const el = { id: uuidv4(), type: "rect", x: rx, y: ry, w: rw, h: rh, color: c, width: w, filled: f, playerIndex: pi } as RectElement;
+        pushUndo({ added: [el], removed: [] });
         onElementComplete(el);
       } else if (t === "ellipse") {
-        const rx = Math.abs(pt.x - startX) / 2, ry = Math.abs(pt.y - startY) / 2;
+        let rx = Math.abs(dx) / 2, ry = Math.abs(dy) / 2;
+        if (shift) { const r = Math.max(rx, ry); rx = r; ry = r; }
         if (rx < 5 || ry < 5) return;
-        const el = { id: uuidv4(), type: "ellipse", cx: (startX + pt.x) / 2, cy: (startY + pt.y) / 2, rx, ry, color: c, width: w, filled: f, playerIndex: pi } as EllipseElement;
-        undoStackRef.current.push({ added: [el], removed: [] });
+        const el = { id: uuidv4(), type: "ellipse", cx: startX + dx / 2, cy: startY + dy / 2, rx, ry, color: c, width: w, filled: f, playerIndex: pi } as EllipseElement;
+        pushUndo({ added: [el], removed: [] });
         onElementComplete(el);
       } else if (t === "line") {
-        if (Math.hypot(pt.x - startX, pt.y - startY) < 5) return;
-        const el = { id: uuidv4(), type: "line", x1: startX, y1: startY, x2: pt.x, y2: pt.y, color: c, width: w, playerIndex: pi } as LineElement;
-        undoStackRef.current.push({ added: [el], removed: [] });
+        let ex = pt.x, ey = pt.y;
+        if (shift) {
+          const angle = Math.atan2(dy, dx);
+          const snapped = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+          const dist = Math.hypot(dx, dy);
+          ex = startX + dist * Math.cos(snapped);
+          ey = startY + dist * Math.sin(snapped);
+        }
+        if (Math.hypot(ex - startX, ey - startY) < 5) return;
+        const el = { id: uuidv4(), type: "line", x1: startX, y1: startY, x2: ex, y2: ey, color: c, width: w, playerIndex: pi } as LineElement;
+        pushUndo({ added: [el], removed: [] });
         onElementComplete(el);
       } else if (t === "arrow") {
-        if (Math.hypot(pt.x - startX, pt.y - startY) < 5) return;
-        const el = { id: uuidv4(), type: "arrow", x1: startX, y1: startY, x2: pt.x, y2: pt.y, color: c, width: w, playerIndex: pi } as ArrowElement;
-        undoStackRef.current.push({ added: [el], removed: [] });
+        let ex = pt.x, ey = pt.y;
+        if (shift) {
+          const angle = Math.atan2(dy, dx);
+          const snapped = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+          const dist = Math.hypot(dx, dy);
+          ex = startX + dist * Math.cos(snapped);
+          ey = startY + dist * Math.sin(snapped);
+        }
+        if (Math.hypot(ex - startX, ey - startY) < 5) return;
+        const el = { id: uuidv4(), type: "arrow", x1: startX, y1: startY, x2: ex, y2: ey, color: c, width: w, playerIndex: pi } as ArrowElement;
+        pushUndo({ added: [el], removed: [] });
         onElementComplete(el);
       }
     },
-    [toCanvas, onElementComplete, onPreviewUpdate, onErase]
+    [toCanvas, onElementComplete, onPreviewUpdate, onErase, pushUndo]
   );
 
   const handleMouseLeave = useCallback(() => {
     mousePosRef.current = null;
+    handleDragRef.current = null;
     if (toolRef.current === "select") {
       dragStateRef.current = null;
       marqueeRef.current = null;
@@ -1454,9 +1824,9 @@ export default function WhiteboardCanvas({
           id: uuidv4(), type: "text",
           x: ti.worldX, y: ti.worldY,
           text: tv, color: colorRef.current,
-          fontSize: 28, playerIndex: playerIndexRef.current,
+          fontSize: fontSizeRef.current, playerIndex: playerIndexRef.current,
         } as TextElement;
-        undoStackRef.current.push({ added: [el], removed: [] });
+        pushUndo({ added: [el], removed: [] });
         onElementComplete(el);
       }
       setTextInput(null);
@@ -1511,7 +1881,7 @@ export default function WhiteboardCanvas({
       name: page.name,
       playerIndex: playerIndexRef.current,
     } as ImageElement;
-    undoStackRef.current.push({ added: [el], removed: [] });
+    pushUndo({ added: [el], removed: [] });
     onElementComplete(el);
   }, [onElementComplete]);
 
@@ -1522,6 +1892,7 @@ export default function WhiteboardCanvas({
     tool === "text" ? "text" :
     tool === "eraser" ? "none" :
     tool === "fill" ? "cell" :
+    tool === "laser" ? "none" :
     "crosshair"
   );
 
@@ -1553,6 +1924,15 @@ export default function WhiteboardCanvas({
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">
             <path d="M3 7v6h6" /><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" />
+          </svg>
+        </button>
+        <button
+          title="Redo (Ctrl+Y)"
+          onClick={handleLocalRedo}
+          className="w-9 h-9 rounded-lg flex items-center justify-center text-gray-500 hover:bg-gray-100 hover:text-gray-800 transition"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">
+            <path d="M21 7v6h-6" /><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13" />
           </svg>
         </button>
         <button
@@ -1611,6 +1991,39 @@ export default function WhiteboardCanvas({
             <div className="w-5 h-5 rounded-full border border-gray-300" style={{ background: c }} />
           </button>
         ))}
+
+        {/* Custom color picker */}
+        <div className="relative w-8 h-8 rounded-lg overflow-hidden border border-gray-300 hover:ring-1 hover:ring-indigo-400 transition" title="Custom color">
+          <input
+            type="color"
+            value={color}
+            onChange={(e) => setColor(e.target.value)}
+            className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
+          />
+          <div className="w-full h-full flex items-center justify-center pointer-events-none" style={{ background: color }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke={color === "#ffffff" ? "#94a3b8" : "#ffffff"} strokeWidth={2} strokeLinecap="round" className="w-3.5 h-3.5">
+              <path d="M12 2l2 7h7l-5.5 4 2 7L12 16l-5.5 4 2-7L3 9h7z" />
+            </svg>
+          </div>
+        </div>
+
+        {/* Font size (visible only when text tool is active) */}
+        {tool === "text" && (
+          <>
+            <div className="w-5 h-px bg-gray-200" />
+            {FONT_SIZES.map((fs) => (
+              <button
+                key={fs}
+                title={`Font size ${fs}`}
+                onClick={() => setFontSize(fs)}
+                className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold transition
+                  ${fontSize === fs ? "bg-indigo-50 ring-1 ring-indigo-300 text-indigo-600" : "text-gray-500 hover:bg-gray-100"}`}
+              >
+                {fs}
+              </button>
+            ))}
+          </>
+        )}
       </div>
 
       {/* ── Zoom controls ──────────────────────────────────────────────────────── */}
@@ -1655,6 +2068,22 @@ export default function WhiteboardCanvas({
             className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 rounded-t-xl"
           >
             Delete{contextMenu.elementIds.length > 1 ? ` (${contextMenu.elementIds.length})` : ""}
+          </button>
+          <div className="h-px bg-gray-100 my-1" />
+          <button
+            onClick={() => {
+              const duped = elementsRef.current
+                .filter((el) => contextMenu.elementIds.includes(el.id))
+                .map((el) => translateElement({ ...el, id: uuidv4(), playerIndex: playerIndexRef.current }, 20, 20));
+              pushUndo({ added: duped, removed: [] });
+              duped.forEach((el) => onElementComplete(el));
+              setSelectedIds(duped.map((el) => el.id));
+              selectedIdsRef.current = duped.map((el) => el.id);
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+          >
+            Duplicate
           </button>
           <div className="h-px bg-gray-100 my-1" />
           <button onClick={() => { contextMenu.elementIds.forEach((id) => onReorder(id, "front")); setContextMenu(null); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Bring to Front</button>

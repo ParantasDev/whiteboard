@@ -9,7 +9,8 @@ export type ToolType =
   | "arrow"
   | "text"
   | "eraser"
-  | "fill";
+  | "fill"
+  | "laser";
 
 export interface ImageElement extends BaseElement {
   type: "image";
@@ -20,6 +21,7 @@ export interface ImageElement extends BaseElement {
   url: string;
   name: string;
   fills?: Array<{ wx: number; wy: number; color: string }>;
+  rotation?: number;
 }
 
 export interface BaseElement {
@@ -45,6 +47,7 @@ export interface RectElement extends BaseElement {
   width: number;
   filled: boolean;
   fillColor?: string;
+  rotation?: number;
 }
 
 export interface EllipseElement extends BaseElement {
@@ -57,6 +60,7 @@ export interface EllipseElement extends BaseElement {
   width: number;
   filled: boolean;
   fillColor?: string;
+  rotation?: number;
 }
 
 export interface LineElement extends BaseElement {
@@ -86,6 +90,7 @@ export interface TextElement extends BaseElement {
   text: string;
   color: string;
   fontSize: number;
+  rotation?: number;
 }
 
 export type DrawElement =
@@ -101,6 +106,7 @@ export interface RemoteCursor {
   x: number;
   y: number;
   playerIndex: number;
+  isLaser?: boolean;
 }
 
 export type RemotePreview =

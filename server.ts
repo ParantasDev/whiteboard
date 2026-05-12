@@ -101,6 +101,21 @@ app.prepare().then(() => {
       socket.to(currentRoom).emit("draw:erase", { ids });
     });
 
+    // Reorder element (bring/send forward/backward)
+    socket.on("draw:reorder", ({ id, action }: { id: string; action: string }) => {
+      if (!currentRoom) return;
+      const room = rooms.get(currentRoom);
+      if (!room) return;
+      const idx = room.elements.findIndex((el) => el.id === id);
+      if (idx === -1) return;
+      const [el] = room.elements.splice(idx, 1);
+      if (action === "front") room.elements.push(el);
+      else if (action === "back") room.elements.unshift(el);
+      else if (action === "forward") room.elements.splice(Math.min(room.elements.length, idx + 1), 0, el);
+      else if (action === "backward") room.elements.splice(Math.max(0, idx - 1), 0, el);
+      io.to(currentRoom).emit("room:elements", room.elements);
+    });
+
     // Clear entire board
     socket.on("draw:clear", () => {
       if (!currentRoom) return;

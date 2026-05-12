@@ -1,13 +1,15 @@
 export type Point = { x: number; y: number };
 
 export type ToolType =
+  | "select"
   | "pen"
   | "rect"
   | "ellipse"
   | "line"
   | "arrow"
   | "text"
-  | "eraser";
+  | "eraser"
+  | "fill";
 
 export interface BaseElement {
   id: string;
@@ -19,6 +21,7 @@ export interface StrokeElement extends BaseElement {
   points: Point[];
   color: string;
   width: number;
+  fillColor?: string;
 }
 
 export interface RectElement extends BaseElement {
@@ -30,6 +33,7 @@ export interface RectElement extends BaseElement {
   color: string;
   width: number;
   filled: boolean;
+  fillColor?: string;
 }
 
 export interface EllipseElement extends BaseElement {
@@ -41,6 +45,7 @@ export interface EllipseElement extends BaseElement {
   color: string;
   width: number;
   filled: boolean;
+  fillColor?: string;
 }
 
 export interface LineElement extends BaseElement {
